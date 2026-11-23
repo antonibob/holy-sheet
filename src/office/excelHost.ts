@@ -30,7 +30,7 @@ interface RangeLike extends Loadable {
   formulas: Array<Array<string | number | null>>;
   isNullObject?: boolean;
   getIntersectionOrNullObject(other: RangeLike): RangeLike;
-  getFormat(): { autofitColumns(): void };
+  format: { autofitColumns(): void };
 }
 
 interface SheetLike extends Loadable {
@@ -243,7 +243,7 @@ export async function applyWrite(write: PendingWrite): Promise<AppliedWrite> {
         return v === null || v === undefined ? "" : typeof v === "boolean" ? String(v) : v;
       }),
     );
-    dest.getFormat().autofitColumns();
+    dest.format.autofitColumns();
     await ctx.sync();
 
     return { address: dest.address, priorFormulas };
