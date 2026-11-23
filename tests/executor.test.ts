@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   columnLetter,
   createExecutor,
+  aggregateRange,
   describeColumns,
   startColumnOf,
   startRowOf,
@@ -200,6 +201,90 @@ describe("executor dispatch", () => {
     expect(res.isError).toBe(true);
     expect(String((res.content as { error: string }).error)).toMatch(/Narrow the address/);
   });
+});
+
+describe("aggregateRange (host-side group-by)", () => {
+  const sheet = [
+    ["Category", "Vendor", "Amount"],
+    ["Travel", "AirCo", "1,250.00"],
+    ["Meals", "Cafe", "(75.50)"],
+    ["Travel", "Taxi", "$45.00"],
+    ["Meals", "Deli", "n/a?"], // unparseable on purpose
+    ["Travel", "Rail", ""], // blank = absence, not a failure
+  ];
+
+  it("groups by column and sums exact integer cents", () => {
+    const agg = aggregateRange(sheet, 0, 2);
+    const travel = agg.groups.find((g) => g.key === "Travel");
+    const meals = agg.groups.find((g) => g.key === "Meals");
+    expect(agg.totalGroups).toBe(2);
+    expect(travel).toMatchObject({ count: 3, sumCents: 129500, minCents: 4500, maxCents: 125000, parsedCount: 2 });
+    expect(meals).toMatchObject({ count: 2, sumCents: -7550 });
+    expect(agg.grandSumCents).toBe(121950);
+  });
+
+  it("reports unparseable amounts with their 1-based sheet rows instead of dropping them silently", () => {
+    const agg = aggregateRange(sheet, 0, 2);
+    expect(agg.parseFailures).toEqual([{ row: 5, raw: "n/a?" }]);
+  });
+
+  it("groups blank keys as (blank) rather than collapsing them into another group", () => {
+    const agg = aggregateRange([["K", "V"], ["", "1"], ["A", "2"], [null, "3"]], 0, 1);
+    expect(agg.groups.find((g) => g.key === "(blank)")?.sumCents).toBe(400);
+    expect(agg.totalGroups).toBe(2);
+  });
+
+  it("sorts groups by sum descending and truncates the group list past 200", () => {
+    const big = [["K", "V"], ...Array.from({ length: 250 }, (_, i) => [`g${i}`, i])];
+    const agg = aggregateRange(big, 0, 1);
+    expect(agg.groups.length).toBe(200);
+    expect(agg.totalGroups).toBe(250);
+    expect(agg.groups[0]?.sumCents ?? 0).toBeGreaterThanOrEqual(agg.groups[1]?.sumCents ?? 0);
+  });
+});
+
+describe("aggregate_range dispatch", () => {
+  const stageNoop = () => {};
+
+  it("validates arguments and bounds before aggregating", async () => {
+    const exec = createExecutor({ host: fakeHost([["A", "B", "C"], [1, 2, 3]]), stageWrite: stageNoop });
+    expect((await exec(call("aggregate_range", { groupBy: 0, valueColumn: 2 }))).isError).toBe(true);
+    expect((await exec(call("aggregate_range", { address: "A1:C2" }))).isError).toBe(true);
+    expect((await exec(call("aggregate_range", { address: "A1:C2", groupBy: 2, valueColumn: 2 }))).isError).toBe(true);
+    const oob = await exec(call("aggregate_range", { address: "A1:C2", groupBy: 0, valueColumn: 9 }));
+    expect(String((oob.content as { error: string }).error)).toMatch(/out of bounds/);
+  });
+
+  it("returns per-group totals the model can quote without seeing raw rows", async () => {
+    const sheet = [
+      ["Category", "Vendor", "Amount"],
+      ["Travel", "AirCo", "1,250.00"],
+      ["Meals", "Cafe", "(75.50)"],
+      ["Travel", "Taxi", "$45.00"],
+      ["Meals", "Deli", "n/a?"],
+      ["Travel", "Rail", ""],
+    ];
+    const exec = createExecutor({ host: fakeHost(sheet), stageWrite: stageNoop });
+    const res = await exec(call("aggregate_range", { address: "A1:C6", groupBy: 0, valueColumn: 2 }));
+    const c = res.content as {
+      grandSum: string;
+      groups: Array<{ key: string; count: number; sum: string; min: string | null; max: string | null; avg: string | null }>;
+      unreadableCount: number;
+      summary: string;
+    };
+    expect(c.grandSum).toBe("1219.50");
+    expect(c.groups[0]).toMatchObject({ key: "Travel", count: 3, sum: "1295.00", min: "45.00", max: "1250.00", avg: "647.50" });
+    expect(c.unreadableCount).toBe(1);
+    expect(c.summary).toMatch(/could not be parsed/);
+  });
+
+  it("refuses to aggregate a range past the row ceiling", async () => {
+    const big = Array.from({ length: 9000 }, () => ["a", 1]);
+    const exec = createExecutor({ host: fakeHost(big), stageWrite: stageNoop });
+    const res = await exec(call("aggregate_range", { address: "A1:B9000", groupBy: 0, valueColumn: 1 }));
+    expect(res.isError).toBe(true);
+    expect(String((res.content as { error: string }).error)).toMatch(/Narrow the address/);
+});
 });
 
 describe("formula parity", () => {

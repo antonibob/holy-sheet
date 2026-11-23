@@ -11,7 +11,7 @@
  * untouched.
  */
 
-import { findDuplicates } from "../engine/index.js";
+import { findDuplicates, parseAmount } from "../engine/index.js";
 import { reconcileTwoColumns } from "../taskpane/reconcile.js";
 import type { ToolCall, ToolResult } from "../model/tools.js";
 
@@ -183,6 +183,87 @@ function int(args: Record<string, unknown>, key: string): number | null {
   return null;
 }
 
+/** One group in an aggregate_range result. Money is exact integer cents. */
+export interface AggregateGroup {
+  key: string;
+  count: number;
+  sumCents: number;
+  minCents: number | null;
+  maxCents: number | null;
+  /** Row offsets (within the read range) of members, for click-through. */
+  rows: number[];
+  /** Members whose amount actually parsed — the denominator for avg. */
+  parsedCount: number;
+}
+
+export interface AggregateOptions {
+  aggregations?: string[];
+  maxGroups?: number;
+}
+
+export interface AggregateResult {
+  groups: AggregateGroup[];
+  totalGroups: number;
+  grandSumCents: number;
+  rowCount: number;
+  /** Non-empty cells in valueColumn that could not be read as amounts. */
+  parseFailures: Array<{ row: number; raw: string }>;
+}
+
+/**
+ * Host-side group-by/summary over one text/group column and one amount column.
+ *
+ * Exists so the model never has to pull thousands of rows into context to add
+ * them up. All money arithmetic is exact integer cents via the shared amount
+ * parser (parentheses negatives, DR/CR, currency symbols), and rows whose
+ * amount cannot be parsed are reported back rather than dropped silently.
+ */
+export function aggregateRange(
+  values: CellValue[][],
+  groupBy: number,
+  valueColumn: number,
+  opts: AggregateOptions = {},
+): AggregateResult {
+  const body = values.slice(1); // first row is the header, matching read_range/reconcile conventions
+  const groups = new Map<string, AggregateGroup>();
+  const parseFailures: Array<{ row: number; raw: string }> = [];
+  let grandSumCents = 0;
+
+  body.forEach((row, offset) => {
+    const raw = row[valueColumn];
+    const key = String(row[groupBy] ?? "").trim() || "(blank)";
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, count: 0, sumCents: 0, minCents: null, maxCents: null, rows: [], parsedCount: 0 };
+      groups.set(key, g);
+    }
+    g.count += 1;
+    g.rows.push(offset);
+
+    if (raw === null || raw === undefined || String(raw).trim() === "") return; // absence, not an error
+    const parsed = parseAmount(raw as string | number);
+    if (!parsed.ok) {
+      parseFailures.push({ row: offset + 2, raw: String(raw) }); // +2: skip header, 1-based
+      return;
+    }
+    g.minCents = g.minCents === null ? parsed.cents : Math.min(g.minCents, parsed.cents);
+    g.maxCents = g.maxCents === null ? parsed.cents : Math.max(g.maxCents, parsed.cents);
+    g.sumCents += parsed.cents;
+    g.parsedCount += 1;
+    grandSumCents += parsed.cents;
+  });
+
+  const maxGroups = opts.maxGroups ?? 200;
+  const sorted = [...groups.values()].sort((a, b) => b.sumCents - a.sumCents || a.key.localeCompare(b.key));
+  return {
+    groups: sorted.slice(0, maxGroups),
+    totalGroups: groups.size,
+    grandSumCents,
+    rowCount: body.length,
+    parseFailures,
+  };
+}
+
 let writeSeq = 0;
 
 export function createExecutor(deps: ExecutorDeps) {
@@ -292,6 +373,55 @@ export function createExecutor(deps: ExecutorDeps) {
             value: f.raw,
           })),
           summary: summary.text,
+        });
+      }
+
+      case "aggregate_range": {
+        const address = str(call.args, "address");
+        const groupBy = int(call.args, "groupBy");
+        const valueColumn = int(call.args, "valueColumn");
+        if (!address) return fail(call, "aggregate_range needs an `address`.");
+        if (groupBy === null || valueColumn === null) {
+          return fail(call, "aggregate_range needs integer `groupBy` and `valueColumn` offsets within the address.");
+        }
+        if (groupBy === valueColumn) return fail(call, "groupBy and valueColumn are the same column.");
+        const res = await host.readRange(address, ABSOLUTE_MAX_ROWS);
+        if (res.truncated) {
+          return fail(
+            call,
+            `That range has ${res.totalRows} rows, beyond the ${ABSOLUTE_MAX_ROWS}-row limit for one aggregation. Narrow the address.`,
+          );
+        }
+        const width = Math.max(0, ...res.values.map((r) => r.length));
+        if (groupBy >= width || valueColumn >= width) {
+          return fail(call, `The range is ${width} column(s) wide; groupBy=${groupBy} valueColumn=${valueColumn} is out of bounds.`);
+        }
+        const agg = aggregateRange(res.values, groupBy, valueColumn);
+        const money = (c: number | null) => (c === null ? null : (c / 100).toFixed(2));
+        return ok(call, {
+          address: res.address,
+          rowsGrouped: agg.rowCount,
+          totalGroups: agg.totalGroups,
+          grandSum: (agg.grandSumCents / 100).toFixed(2),
+          groups: agg.groups.map((g) => ({
+            key: g.key,
+            count: g.count,
+            sum: money(g.sumCents),
+            min: money(g.minCents),
+            max: money(g.maxCents),
+            avg: g.parsedCount > 0 ? money(Math.round(g.sumCents / g.parsedCount)) : null,
+          })),
+          truncated: agg.totalGroups > agg.groups.length,
+          unreadableCells: agg.parseFailures.slice(0, 20),
+          unreadableCount: agg.parseFailures.length,
+          summary:
+            `${agg.totalGroups} group(s) over ${agg.rowCount} row(s); grand total ${(agg.grandSumCents / 100).toFixed(2)}.` +
+            (agg.parseFailures.length > 0
+              ? ` ${agg.parseFailures.length} amount cell(s) could not be parsed and are excluded from the sums (rows ${agg.parseFailures
+                  .slice(0, 5)
+                  .map((f) => f.row)
+                  .join(", ")}${agg.parseFailures.length > 5 ? ", …" : ""}).`
+              : ""),
         });
       }
 
