@@ -127,55 +127,96 @@ conventional taxability.
 
 ## Install & run in Excel
 
-Everything needed is wired up. On this machine the system CA already trusts the
-localhost cert and the server runs on `https://localhost:3000`.
+Windows, start to finish. Steps 1–3 are once per machine; after that it is just
+`npm run build && npm run serve`.
+
+### 1. Trust the localhost certificate (once)
+
+Excel refuses to load a task pane over plain HTTP, and refuses a cert it does
+not trust. This writes a CA into the system trust store, so it needs an
+elevated prompt the first time.
+
+```sh
+npm install
+npx office-addin-dev-certs install
+```
+
+### 2. Build and serve
 
 ```sh
 npm run build     # typecheck + icons + bundle dist/
-npm run serve     # HTTPS server on https://localhost:3000 with the localhost cert
+npm run serve     # https://localhost:3000 — leave this running
 ```
 
-Then sideload the add-in into Excel. The shared-folder catalog is the most
-reliable path (works regardless of whether the newer "Apps" store shows an
-Upload button in your build):
+Check it in a browser first: open `https://localhost:3000/taskpane.html`. No
+certificate warning means step 1 worked. The pane renders there without Excel,
+so this also confirms the bundle is good before Excel is involved.
 
-```sh
-# one-time: point Excel at a folder that lists your add-in manifests
-scripts/setup-shared-folder.bat   # or run the reg add it performs
-mkdir -p manifests && cp manifest.xml manifests/   # folder already has it
+### 3. Share the manifest folder (once)
+
+**Excel's trusted catalog must be a UNC network share — a local path like
+`C:\Users\you\office-ai-closer\manifests` will not work.** This is the step
+people get stuck on: the folder looks right, Excel just never lists the add-in.
+
+Run in an **Administrator** command prompt (`net share` needs elevation):
+
+```bat
+scripts\create_share.bat
 ```
 
-Then in Excel:
+That shares the `manifests` folder as `\\localhost\OfficeAddins`. If the folder
+does not exist yet, run `scripts\setup-shared-folder.bat` first — it creates it
+and copies `manifest.xml` in.
+
+> Editing `manifest.xml` later means copying it into `manifests\` again; the
+> share points at that copy, not at the repository root.
+
+### 4. Add the catalog in Excel (once)
+
 1. **File → Options → Trust Center → Trust Center Settings → Trusted Add-in Catalogs**
-2. Under "Categories/Trusted catalogs", check **Catalog URL** that points to the
-   `manifests` folder, and enable **"Show in Menu"**
-3. Restart Excel → **Home → Add-ins → My Add-ins** → the **AI Closer** taskpane
-   is listed → click it.
+2. Paste `\\localhost\OfficeAddins` into **Catalog Url**, click **Add catalog**
+3. Tick **Show in Menu** on the row that appears, then **OK**, then **OK**
+4. **Close Excel completely** — the catalog is only read at startup
 
-The add-in fetches `https://localhost:3000/taskpane.html` (trusted cert) and
-mounts the taskpane on `Office.onReady`.
+### 5. Insert the add-in
 
-> The add-in also runs as a standalone web demo in any browser at
-> `https://localhost:3000/taskpane.html` (no Office required) — Office.js is
-> loaded from the CDN but the dual-mode bootstrap skips `Office.onReady` when
-> no host is present.
+**Insert → My Add-ins → Shared Folder** → **AI Closer** → **Add**.
 
-**First-time cert setup** (already done here, but for a fresh clone):
+The *Shared Folder* tab is the other thing people miss — My Add-ins opens on
+the Store tab, and the add-in is never listed there.
 
-```sh
-npm i -D office-addin-dev-certs
-npx office-addin-dev-certs install   # generates + trusts localhost cert
-npm run serve                        # reuses ~/.office-addin-dev-certs/
-```
+### If it still does not appear
 
-> Note: `office-addin-dev-certs` needs to write the CA cert into the system
-> trust store (admin elevation on Windows) the first time.
+- `npm run serve` must be running, and the browser check in step 2 must pass.
+- The catalog path must be the `\\localhost\...` share, not a drive path.
+- Excel must have been fully closed and reopened after step 4.
+- `net share` with no arguments should list `OfficeAddins`; if not, step 3 was
+  not run elevated.
+
+### Check it actually works
+
+Open the pane and press **⚕** in its header, then **Run self-check**. It
+exercises every path that touches Excel — cross-sheet reads, mixed literal and
+formula writes, undo, charts — in a scratch worksheet it deletes afterwards.
+Your data is never written to. If something is broken, that panel names the
+step and shows the real Office.js error.
+
+> The pane also runs as a plain web page at
+> `https://localhost:3000/taskpane.html` with no Office host; the sheet tools
+> are unavailable there, and it says so.
 
 ## Models & cost
 
-BYO key, pick a cheap model. Default is `deepseek/deepseek-v3-0724`; the
-prompt-token cost for a full card month is pennies. The draft layer is scoped
-to the handful of suspense/ambiguous rows, not the whole ledger.
+Bring your own OpenRouter key; it goes straight to OpenRouter with no server in
+between. The model picker is populated from `/api/v1/models` and filtered to
+models that support tool calling — the pane drives the sheet through tools, so
+a model without them cannot work, and a hardcoded list goes stale and 404s.
+
+Cheap models are fine. The protocol differences that make DeepSeek or GLM look
+broken — emitting a tool call as text, misnaming it, renaming an argument — are
+absorbed in `src/model/salvage.ts`, so the model choice is a cost decision
+rather than a works/doesn't decision. Spend for the session is shown in the
+header.
 
 ## Prior art
 
