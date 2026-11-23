@@ -2,17 +2,24 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   columnLetter,
   createExecutor,
+  aggregateRange,
   describeColumns,
   startColumnOf,
   startRowOf,
   type ChartSpec,
+  type FormulaReadResult,
   type Host,
   type PendingWrite,
   type ReadResult,
 } from "../src/office/executor.js";
 import type { ToolCall } from "../src/model/tools.js";
 
-function fakeHost(values: Array<Array<string | number | null>>, address = "A1:C9"): Host {
+function fakeHost(
+  values: Array<Array<string | number | null>>,
+  address = "A1:C9",
+  formulas?: string[][],
+): Host {
+  const formulaView = formulas ?? values.map((row) => row.map((v) => String(v ?? "")));
   return {
     async getSheetContext() {
       return {
@@ -22,6 +29,7 @@ function fakeHost(values: Array<Array<string | number | null>>, address = "A1:C9
         columnCount: Math.max(0, ...values.map((r) => r.length)),
         selectionAddress: address,
         sample: values.slice(0, 8),
+        sampleFormulas: formulaView.slice(0, 8),
         tables: [],
       };
     },
@@ -31,6 +39,14 @@ function fakeHost(values: Array<Array<string | number | null>>, address = "A1:C9
         values: values.slice(0, maxRows),
         truncated: values.length > maxRows,
         totalRows: values.length,
+      };
+    },
+    async readFormulas(addr: string, maxRows: number): Promise<FormulaReadResult> {
+      return {
+        address: addr,
+        formulas: formulaView.slice(0, maxRows),
+        truncated: formulaView.length > maxRows,
+        totalRows: formulaView.length,
       };
     },
     async createTable(addr: string) {
@@ -263,5 +279,140 @@ describe("executor dispatch", () => {
     const res = await exec(call("reconcile_columns", { address: "A1:B9000", columnA: 0, columnB: 1 }));
     expect(res.isError).toBe(true);
     expect(String((res.content as { error: string }).error)).toMatch(/Narrow the address/);
+  });
+});
+
+describe("aggregateRange (host-side group-by)", () => {
+  const sheet = [
+    ["Category", "Vendor", "Amount"],
+    ["Travel", "AirCo", "1,250.00"],
+    ["Meals", "Cafe", "(75.50)"],
+    ["Travel", "Taxi", "$45.00"],
+    ["Meals", "Deli", "n/a?"], // unparseable on purpose
+    ["Travel", "Rail", ""], // blank = absence, not a failure
+  ];
+
+  it("groups by column and sums exact integer cents", () => {
+    const agg = aggregateRange(sheet, 0, 2);
+    const travel = agg.groups.find((g) => g.key === "Travel");
+    const meals = agg.groups.find((g) => g.key === "Meals");
+    expect(agg.totalGroups).toBe(2);
+    expect(travel).toMatchObject({ count: 3, sumCents: 129500, minCents: 4500, maxCents: 125000, parsedCount: 2 });
+    expect(meals).toMatchObject({ count: 2, sumCents: -7550 });
+    expect(agg.grandSumCents).toBe(121950);
+  });
+
+  it("reports unparseable amounts with their 1-based sheet rows instead of dropping them silently", () => {
+    const agg = aggregateRange(sheet, 0, 2);
+    expect(agg.parseFailures).toEqual([{ row: 5, raw: "n/a?" }]);
+  });
+
+  it("groups blank keys as (blank) rather than collapsing them into another group", () => {
+    const agg = aggregateRange([["K", "V"], ["", "1"], ["A", "2"], [null, "3"]], 0, 1);
+    expect(agg.groups.find((g) => g.key === "(blank)")?.sumCents).toBe(400);
+    expect(agg.totalGroups).toBe(2);
+  });
+
+  it("sorts groups by sum descending and truncates the group list past 200", () => {
+    const big = [["K", "V"], ...Array.from({ length: 250 }, (_, i) => [`g${i}`, i])];
+    const agg = aggregateRange(big, 0, 1);
+    expect(agg.groups.length).toBe(200);
+    expect(agg.totalGroups).toBe(250);
+    expect(agg.groups[0]?.sumCents ?? 0).toBeGreaterThanOrEqual(agg.groups[1]?.sumCents ?? 0);
+  });
+});
+
+describe("aggregate_range dispatch", () => {
+
+  it("validates arguments and bounds before aggregating", async () => {
+    const exec = createExecutor(deps(fakeHost([["A", "B", "C"], [1, 2, 3]])));
+    expect((await exec(call("aggregate_range", { groupBy: 0, valueColumn: 2 }))).isError).toBe(true);
+    expect((await exec(call("aggregate_range", { address: "A1:C2" }))).isError).toBe(true);
+    expect((await exec(call("aggregate_range", { address: "A1:C2", groupBy: 2, valueColumn: 2 }))).isError).toBe(true);
+    const oob = await exec(call("aggregate_range", { address: "A1:C2", groupBy: 0, valueColumn: 9 }));
+    expect(String((oob.content as { error: string }).error)).toMatch(/out of bounds/);
+  });
+
+  it("returns per-group totals the model can quote without seeing raw rows", async () => {
+    const sheet = [
+      ["Category", "Vendor", "Amount"],
+      ["Travel", "AirCo", "1,250.00"],
+      ["Meals", "Cafe", "(75.50)"],
+      ["Travel", "Taxi", "$45.00"],
+      ["Meals", "Deli", "n/a?"],
+      ["Travel", "Rail", ""],
+    ];
+    const exec = createExecutor(deps(fakeHost(sheet)));
+    const res = await exec(call("aggregate_range", { address: "A1:C6", groupBy: 0, valueColumn: 2 }));
+    const c = res.content as {
+      grandSum: string;
+      groups: Array<{ key: string; count: number; sum: string; min: string | null; max: string | null; avg: string | null }>;
+      unreadableCount: number;
+      summary: string;
+    };
+    expect(c.grandSum).toBe("1219.50");
+    expect(c.groups[0]).toMatchObject({ key: "Travel", count: 3, sum: "1295.00", min: "45.00", max: "1250.00", avg: "647.50" });
+    expect(c.unreadableCount).toBe(1);
+    expect(c.summary).toMatch(/could not be parsed/);
+  });
+
+  it("refuses to aggregate a range past the row ceiling", async () => {
+    const big = Array.from({ length: 9000 }, () => ["a", 1]);
+    const exec = createExecutor(deps(fakeHost(big)));
+    const res = await exec(call("aggregate_range", { address: "A1:B9000", groupBy: 0, valueColumn: 1 }));
+    expect(res.isError).toBe(true);
+    expect(String((res.content as { error: string }).error)).toMatch(/Narrow the address/);
+});
+});
+
+describe("formula parity", () => {
+
+  it("read_formulas returns the formula view and distinguishes live cells from constants", async () => {
+    const exec = createExecutor(deps(fakeHost(
+        [["Qty", "Total"], [2, 300], [3, 450]],
+        "A1:B3",
+        [["Qty", "Total"], ["2", "=A2*150"], ["3", "=A3*150"]],
+      )));
+    const res = await exec(call("read_formulas", { address: "A1:B3" }));
+    expect(res.isError).toBeUndefined();
+    const c = res.content as { formulas: string[][]; totalRows: number; note: string };
+    expect(c.formulas[1]?.[1]).toBe("=A2*150");
+    expect(c.formulas[1]?.[0]).toBe("2"); // constant comes back as a literal
+    expect(c.totalRows).toBe(3);
+    expect(c.note).toMatch(/live formulas/);
+  });
+
+  it("read_formulas requires an address and caps rows", async () => {
+    const exec = createExecutor(deps(fakeHost([["x"]])));
+    expect((await exec(call("read_formulas"))).isError).toBe(true);
+    const res = await exec(call("read_formulas", { address: "A1", maxRows: 999999 }));
+    expect((res.content as { formulas: unknown[] }).formulas.length).toBe(1);
+  });
+
+  it("get_sheet_context surfaces the formula sample so the model sees live cells", async () => {
+    const exec = createExecutor(deps(fakeHost([["Total"], [300]], "A1:B2", [["Total"], ["=SUM(C2:C2)"]])));
+    const res = await exec(call("get_sheet_context"));
+    const c = res.content as { sampleFormulas?: string[][] };
+    expect(c.sampleFormulas?.[1]?.[0]).toBe("=SUM(C2:C2)");
+  });
+
+  it("propose_write stages '=' strings as live formulas and says how many", async () => {
+    const staged: PendingWrite[] = [];
+    const exec = createExecutor(deps(fakeHost([["old"]]), (w) => { staged.push(w); }));
+    const res = await exec(
+      call("propose_write", { address: "A1:B1", values: [["=SUM(C:C)", 42]], note: "add total" }),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(staged[0]?.values[0]?.[0]).toBe("=SUM(C:C)"); // passes through untouched
+    const c = res.content as { formulaCells?: number; message: string };
+    expect(c.formulaCells).toBe(1);
+    expect(c.message).toMatch(/live formulas/);
+  });
+
+  it("propose_write omits the formula count when there are no formulas", async () => {
+    const exec = createExecutor(deps(fakeHost([["old"]])));
+    const res = await exec(call("propose_write", { address: "A1", values: [["plain"]], note: "x" }));
+    const c = res.content as { formulaCells?: number };
+    expect(c.formulaCells).toBeUndefined();
   });
 });

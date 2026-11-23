@@ -18,6 +18,7 @@ import { columnLetter, splitAddress, startColumnOf, startRowOf } from "./executo
 import type {
   CellValue,
   ChartSpec,
+  FormulaReadResult,
   Host,
   PendingWrite,
   RawSheetContext,
@@ -167,7 +168,7 @@ export const excelHost: Host = {
 
       const rows = Math.min(used.rowCount, Math.max(sampleRows, 1));
       const sample = sheet.getRangeByIndexes(used.rowIndex, used.columnIndex, rows, used.columnCount);
-      sample.load("values");
+      sample.load("values,formulas");
       const tableRanges = sheet.tables.items.map((t) => {
         const r = t.getRange();
         r.load("address");
@@ -182,6 +183,9 @@ export const excelHost: Host = {
         columnCount: used.columnCount,
         selectionAddress: selection.address ?? null,
         sample: sample.values ?? [],
+        sampleFormulas: (sample.formulas ?? []).map((row) =>
+          row.map((c) => (c === null || c === undefined ? "" : String(c))),
+        ),
         tables: tableRanges.map((t) => ({ name: t.name, address: t.range.address })),
       };
     });
@@ -254,6 +258,32 @@ export const excelHost: Host = {
       chart.load("name");
       await ctx.sync();
       return { name: chart.name, anchor: anchorCell };
+    });
+  },
+
+  async readFormulas(address: string, maxRows: number): Promise<FormulaReadResult> {
+    return excelOrThrow().run(async (ctx) => {
+      const { sheet, cell } = sheetFor(ctx, address);
+      const target = sheet.getRange(cell);
+      target.load("address,rowIndex,columnIndex,rowCount,columnCount");
+      const used = sheet.getUsedRangeOrNullObject();
+      used.load(USED_PROPS);
+      await ctx.sync();
+
+      const clipped = clip(sheet, target, used, maxRows);
+      if (!clipped) {
+        return { address: target.address, formulas: [], truncated: false, totalRows: 0 };
+      }
+      clipped.range.load("address,formulas");
+      await ctx.sync();
+      return {
+        address: clipped.range.address,
+        formulas: (clipped.range.formulas ?? []).map((row) =>
+          row.map((c) => (c === null || c === undefined ? "" : String(c))),
+        ),
+        truncated: clipped.truncated,
+        totalRows: clipped.totalRows,
+      };
     });
   },
 

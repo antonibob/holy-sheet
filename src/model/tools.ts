@@ -101,6 +101,26 @@ export const TOOLS: ToolSchema[] = [
   {
     type: "function",
     function: {
+      name: "read_formulas",
+      description:
+        "Read the FORMULA view of a range instead of its computed values. Each cell comes back as its formula string (e.g. \"=SUM(B2:B9)\") or, for constants, its literal value. Use this to see how a sheet is computed, to check whether a number is live or pasted, and before proposing writes that reference existing formulas.",
+      parameters: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: A1 },
+          maxRows: {
+            type: "integer",
+            description: "Cap on rows returned. Defaults to 200. Raise only when you genuinely need more.",
+          },
+        },
+        required: ["address"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "reconcile_columns",
       description:
         "Run the deterministic reconciliation engine over two amount columns (for example GL/book against bank). Returns exact integer-cent totals, one-to-one matched pairs with their real worksheet row numbers, unmatched rows on each side, the residual, and a transposition check. YOU MUST NOT do this arithmetic yourself — call this tool and report what it returns. Amounts are parsed from messy exports (parentheses negatives, DR/CR markers, currency symbols, European decimals).",
@@ -142,6 +162,24 @@ export const TOOLS: ToolSchema[] = [
           dateWindowDays: { type: "integer", description: "Defaults to 3." },
         },
         required: ["address", "vendorColumn", "amountColumn", "dateColumn"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "aggregate_range",
+      description:
+        "Compute a group-by summary HOST-SIDE: group rows by one column and sum/count/min/max/avg an amount column. Returns exact integer-cent totals per group plus a grand total, without any row data entering the conversation. Use this instead of read_range whenever the question is 'how much per X' or 'total for Y' — never add rows up yourself, and never pull thousands of rows into context to sum them. Pick the column indices from get_sheet_context's columnDetail.",
+      parameters: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: A1 + " Should include the header row; the first row is treated as the header." },
+          groupBy: { type: "integer", description: "Zero-based column index within the address to group by (e.g. Category)." },
+          valueColumn: { type: "integer", description: "Zero-based column index within the address of the amount column to aggregate." },
+        },
+        required: ["address", "groupBy", "valueColumn"],
         additionalProperties: false,
       },
     },
@@ -247,15 +285,16 @@ export const TOOLS: ToolSchema[] = [
 
 export const TOOL_NAMES = TOOLS.map((t) => t.function.name);
 
-export const SYSTEM_PROMPT = `You are AI Closer, an accounting copilot living inside an Excel task pane. You work for a qualified accountant — be direct and concise, never chatty.
+export const SYSTEM_PROMPT = `You are Holy Sheet, an accounting copilot living inside an Excel task pane. You work for a qualified accountant — be direct and concise, never chatty.
 
 How you work:
 - If a procedure covers the request, load_procedure FIRST and follow it. A procedure is the firm's settled method; it outranks your own judgement about how the job should be done.
 - Call get_sheet_context before answering anything that depends on what is in the sheet. Do not guess column positions.
 - Call list_sheets when a job could span tabs. A reconciliation usually reads a statement on one sheet and a cashbook on another; address them as "SheetName!A1:D99".
-- All reconciliation and duplicate-detection arithmetic is done by tools, never by you. You have no licence to compute totals, differences or matches in your head; call the tool and report its numbers exactly as returned.
+- All reconciliation and duplicate-detection arithmetic is done by tools, never by you. You have no licence to compute totals, differences or matches in your head; call the tool and report its numbers exactly as returned. For "how much per category/vendor" questions use aggregate_range — it sums host-side, so no bulk row data needs to enter the conversation.
 - You cannot write to the sheet directly. propose_write stages a diff the user accepts or rejects. Say "I've proposed…", never "I've written…".
 - Chain tools when it helps: inspect, then read, then reconcile. You may call several before replying.
+- Formulas beat pasted numbers: when a result belongs in a cell, propose a live formula (e.g. "=SUMIF(A:A,\"x\",C:C)") with propose_write rather than a hardcoded total — the sheet must keep recalculating. Use read_formulas when you need to see how existing cells are computed.
 
 How you report:
 - Lead with the answer. Numbers first, caveats after.

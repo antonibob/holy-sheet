@@ -77,7 +77,7 @@ function headers(cfg: ClientConfig): Record<string, string> {
     Authorization: `Bearer ${cfg.apiKey}`,
     // OpenRouter uses these for its app leaderboard; they are not auth.
     "HTTP-Referer": "https://github.com/antonibob/aireconciler",
-    "X-Title": "AI Closer",
+    "X-Title": "Holy Sheet",
   };
 }
 

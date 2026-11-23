@@ -381,7 +381,7 @@ export function App() {
   return (
     <div className="chat-app">
       <div className="chat-header">
-        <span className="chat-title">AI Closer</span>
+        <span className="chat-title">Holy Sheet</span>
         <span className={`status-dot ${config.apiKey ? "on" : ""}`} title={config.apiKey ? "Key set" : "No API key"} />
         <span className="chat-subtitle">{config.model}</span>
         {spend > 0 && <span className="spend">${spend.toFixed(4)}</span>}
@@ -458,7 +458,7 @@ export function App() {
             </div>
           )}
           <p className="settings-note">
-            Only models that support tool calling are listed — AI Closer drives the sheet through
+            Only models that support tool calling are listed — Holy Sheet drives the sheet through
             tools, so a model without them cannot work. Your key goes straight to OpenRouter; there
             is no server in between.
           </p>
@@ -525,7 +525,7 @@ export function App() {
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={onKeyDown}
           rows={2}
-          placeholder={config.apiKey ? "Ask AI Closer…" : "Add your OpenRouter key to start"}
+          placeholder={config.apiKey ? "Ask Holy Sheet…" : "Add your OpenRouter key to start"}
         />
         {busy ? (
           <button className="send-btn stop" onClick={stop} title="Stop">■</button>

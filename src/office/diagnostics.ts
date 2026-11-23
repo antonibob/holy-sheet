@@ -31,7 +31,7 @@ export interface Check {
   detail: string;
 }
 
-const SCRATCH = "AI Closer check";
+const SCRATCH = "Holy Sheet check";
 
 function describe(err: unknown): string {
   if (err instanceof Error) return err.message;
