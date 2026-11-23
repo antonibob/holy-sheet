@@ -76,6 +76,26 @@ export const TOOLS: ToolSchema[] = [
   {
     type: "function",
     function: {
+      name: "read_formulas",
+      description:
+        "Read the FORMULA view of a range instead of its computed values. Each cell comes back as its formula string (e.g. \"=SUM(B2:B9)\") or, for constants, its literal value. Use this to see how a sheet is computed, to check whether a number is live or pasted, and before proposing writes that reference existing formulas.",
+      parameters: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: A1 },
+          maxRows: {
+            type: "integer",
+            description: "Cap on rows returned. Defaults to 200. Raise only when you genuinely need more.",
+          },
+        },
+        required: ["address"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "reconcile_columns",
       description:
         "Run the deterministic reconciliation engine over two amount columns (for example GL/book against bank). Returns exact integer-cent totals, one-to-one matched pairs with their real worksheet row numbers, unmatched rows on each side, the residual, and a transposition check. YOU MUST NOT do this arithmetic yourself — call this tool and report what it returns. Amounts are parsed from messy exports (parentheses negatives, DR/CR markers, currency symbols, European decimals).",
@@ -179,6 +199,7 @@ How you work:
 - All reconciliation and duplicate-detection arithmetic is done by tools, never by you. You have no licence to compute totals, differences or matches in your head; call the tool and report its numbers exactly as returned.
 - You cannot write to the sheet directly. propose_write stages a diff the user accepts or rejects. Say "I've proposed…", never "I've written…".
 - Chain tools when it helps: inspect, then read, then reconcile. You may call several before replying.
+- Formulas beat pasted numbers: when a result belongs in a cell, propose a live formula (e.g. "=SUMIF(A:A,\"x\",C:C)") with propose_write rather than a hardcoded total — the sheet must keep recalculating. Use read_formulas when you need to see how existing cells are computed.
 
 How you report:
 - Lead with the answer. Numbers first, caveats after.
