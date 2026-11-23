@@ -1,5 +1,5 @@
 {
-  "name": "office-ai-closer",
+  "name": "holy-sheet",
   "version": "0.1.0",
   "description": "On-prem spreadsheet copilot for accountants. Deterministic reconciliation engine + BYO-key OpenRouter draft layer. Flags, never silently balances.",
   "private": true,
