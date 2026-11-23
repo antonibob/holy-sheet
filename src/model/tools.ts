@@ -124,6 +124,24 @@ export const TOOLS: ToolSchema[] = [
   {
     type: "function",
     function: {
+      name: "aggregate_range",
+      description:
+        "Compute a group-by summary HOST-SIDE: group rows by one column and sum/count/min/max/avg an amount column. Returns exact integer-cent totals per group plus a grand total, without any row data entering the conversation. Use this instead of read_range whenever the question is 'how much per X' or 'total for Y' — never add rows up yourself, and never pull thousands of rows into context to sum them. Pick the column indices from get_sheet_context's columnDetail.",
+      parameters: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: A1 + " Should include the header row; the first row is treated as the header." },
+          groupBy: { type: "integer", description: "Zero-based column index within the address to group by (e.g. Category)." },
+          valueColumn: { type: "integer", description: "Zero-based column index within the address of the amount column to aggregate." },
+        },
+        required: ["address", "groupBy", "valueColumn"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "propose_write",
       description:
         "Stage a change to the worksheet for the user to review. This does NOT modify the sheet — it shows the user a before/after diff which they accept or reject. This is the ONLY way to put anything into a cell. Never claim you have written something; say you have proposed it. Values beginning with = are written as live formulas.",
@@ -176,7 +194,7 @@ export const SYSTEM_PROMPT = `You are AI Closer, an accounting copilot living in
 
 How you work:
 - Call get_sheet_context before answering anything that depends on what is in the sheet. Do not guess column positions.
-- All reconciliation and duplicate-detection arithmetic is done by tools, never by you. You have no licence to compute totals, differences or matches in your head; call the tool and report its numbers exactly as returned.
+- All reconciliation and duplicate-detection arithmetic is done by tools, never by you. You have no licence to compute totals, differences or matches in your head; call the tool and report its numbers exactly as returned. For "how much per category/vendor" questions use aggregate_range — it sums host-side, so no bulk row data needs to enter the conversation.
 - You cannot write to the sheet directly. propose_write stages a diff the user accepts or rejects. Say "I've proposed…", never "I've written…".
 - Chain tools when it helps: inspect, then read, then reconcile. You may call several before replying.
 
