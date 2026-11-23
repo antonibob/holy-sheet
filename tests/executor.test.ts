@@ -6,13 +6,19 @@ import {
   describeColumns,
   startColumnOf,
   startRowOf,
+  type FormulaReadResult,
   type Host,
   type PendingWrite,
   type ReadResult,
 } from "../src/office/executor.js";
 import type { ToolCall } from "../src/model/tools.js";
 
-function fakeHost(values: Array<Array<string | number | null>>, address = "A1:C9"): Host {
+function fakeHost(
+  values: Array<Array<string | number | null>>,
+  address = "A1:C9",
+  formulas?: string[][],
+): Host {
+  const formulaView = formulas ?? values.map((row) => row.map((v) => String(v ?? "")));
   return {
     async getSheetContext() {
       return {
@@ -22,6 +28,7 @@ function fakeHost(values: Array<Array<string | number | null>>, address = "A1:C9
         columnCount: Math.max(0, ...values.map((r) => r.length)),
         selectionAddress: address,
         sample: values.slice(0, 8),
+        sampleFormulas: formulaView.slice(0, 8),
         tables: [],
       };
     },
@@ -31,6 +38,14 @@ function fakeHost(values: Array<Array<string | number | null>>, address = "A1:C9
         values: values.slice(0, maxRows),
         truncated: values.length > maxRows,
         totalRows: values.length,
+      };
+    },
+    async readFormulas(addr: string, maxRows: number): Promise<FormulaReadResult> {
+      return {
+        address: addr,
+        formulas: formulaView.slice(0, maxRows),
+        truncated: formulaView.length > maxRows,
+        totalRows: formulaView.length,
       };
     },
     async createTable(addr: string) {
@@ -269,5 +284,64 @@ describe("aggregate_range dispatch", () => {
     const res = await exec(call("aggregate_range", { address: "A1:B9000", groupBy: 0, valueColumn: 1 }));
     expect(res.isError).toBe(true);
     expect(String((res.content as { error: string }).error)).toMatch(/Narrow the address/);
+});
+});
+
+describe("formula parity", () => {
+  const stageNoop = () => {};
+
+  it("read_formulas returns the formula view and distinguishes live cells from constants", async () => {
+    const exec = createExecutor({
+      host: fakeHost(
+        [["Qty", "Total"], [2, 300], [3, 450]],
+        "A1:B3",
+        [["Qty", "Total"], ["2", "=A2*150"], ["3", "=A3*150"]],
+      ),
+      stageWrite: stageNoop,
+    });
+    const res = await exec(call("read_formulas", { address: "A1:B3" }));
+    expect(res.isError).toBeUndefined();
+    const c = res.content as { formulas: string[][]; totalRows: number; note: string };
+    expect(c.formulas[1]?.[1]).toBe("=A2*150");
+    expect(c.formulas[1]?.[0]).toBe("2"); // constant comes back as a literal
+    expect(c.totalRows).toBe(3);
+    expect(c.note).toMatch(/live formulas/);
+  });
+
+  it("read_formulas requires an address and caps rows", async () => {
+    const exec = createExecutor({ host: fakeHost([["x"]]), stageWrite: stageNoop });
+    expect((await exec(call("read_formulas"))).isError).toBe(true);
+    const res = await exec(call("read_formulas", { address: "A1", maxRows: 999999 }));
+    expect((res.content as { formulas: unknown[] }).formulas.length).toBe(1);
+  });
+
+  it("get_sheet_context surfaces the formula sample so the model sees live cells", async () => {
+    const exec = createExecutor({
+      host: fakeHost([["Total"], [300]], "A1:B2", [["Total"], ["=SUM(C2:C2)"]]),
+      stageWrite: stageNoop,
+    });
+    const res = await exec(call("get_sheet_context"));
+    const c = res.content as { sampleFormulas?: string[][] };
+    expect(c.sampleFormulas?.[1]?.[0]).toBe("=SUM(C2:C2)");
+  });
+
+  it("propose_write stages '=' strings as live formulas and says how many", async () => {
+    const staged: PendingWrite[] = [];
+    const exec = createExecutor({ host: fakeHost([["old"]]), stageWrite: (w) => staged.push(w) });
+    const res = await exec(
+      call("propose_write", { address: "A1:B1", values: [["=SUM(C:C)", 42]], note: "add total" }),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(staged[0]?.values[0]?.[0]).toBe("=SUM(C:C)"); // passes through untouched
+    const c = res.content as { formulaCells?: number; message: string };
+    expect(c.formulaCells).toBe(1);
+    expect(c.message).toMatch(/live formulas/);
+  });
+
+  it("propose_write omits the formula count when there are no formulas", async () => {
+    const exec = createExecutor({ host: fakeHost([["old"]]), stageWrite: () => {} });
+    const res = await exec(call("propose_write", { address: "A1", values: [["plain"]], note: "x" }));
+    const c = res.content as { formulaCells?: number };
+    expect(c.formulaCells).toBeUndefined();
   });
 });

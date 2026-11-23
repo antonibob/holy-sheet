@@ -36,6 +36,8 @@ export interface RawSheetContext {
   selectionAddress: string | null;
   /** Header + a bounded sample of data rows from the used range. */
   sample: CellValue[][];
+  /** Formula view of the same rows, when the host can provide it. */
+  sampleFormulas?: string[][];
   tables: Array<{ name: string; address: string }>;
 }
 
@@ -46,10 +48,23 @@ export interface ReadResult {
   totalRows: number;
 }
 
+export interface FormulaReadResult {
+  address: string;
+  /**
+   * The formula view of each cell: "=SUM(A1:A9)" for live formulas, the plain
+   * literal for constant cells. This is what distinguishes a computed cell
+   * from a pasted number.
+   */
+  formulas: string[][];
+  truncated: boolean;
+  totalRows: number;
+}
+
 /** Everything the executor needs from the spreadsheet host. */
 export interface Host {
   getSheetContext(sampleRows: number): Promise<RawSheetContext>;
   readRange(address: string, maxRows: number): Promise<ReadResult>;
+  readFormulas(address: string, maxRows: number): Promise<FormulaReadResult>;
   createTable(address: string, hasHeaders: boolean): Promise<{ address: string }>;
 }
 
@@ -267,6 +282,7 @@ export function createExecutor(deps: ExecutorDeps) {
           tables: ctx.tables,
           columnDetail: describeColumns(ctx.sample, ctx.usedRangeAddress),
           sampleRows: ctx.sample,
+          sampleFormulas: ctx.sampleFormulas,
           note:
             ctx.rowCount === 0
               ? "The sheet is empty."
@@ -288,6 +304,23 @@ export function createExecutor(deps: ExecutorDeps) {
           note: res.truncated
             ? `Showing the first ${res.values.length} of ${res.totalRows} rows. Totals must come from a tool, not from counting these.`
             : undefined,
+        });
+      }
+
+      case "read_formulas": {
+        const address = str(call.args, "address");
+        if (!address) return fail(call, "read_formulas needs an `address`, e.g. \"A1:D200\".");
+        const requested = int(call.args, "maxRows") ?? DEFAULT_MAX_ROWS;
+        const maxRows = Math.min(Math.max(requested, 1), ABSOLUTE_MAX_ROWS);
+        const res = await host.readFormulas(address, maxRows);
+        return ok(call, {
+          address: res.address,
+          formulas: res.formulas,
+          totalRows: res.totalRows,
+          truncated: res.truncated,
+          note: res.truncated
+            ? `Showing the formula view of the first ${res.formulas.length} of ${res.totalRows} rows.`
+            : "Cells shown as literals are constants; cells shown with a leading = are live formulas the sheet recalculates.",
         });
       }
 
@@ -439,6 +472,21 @@ export function createExecutor(deps: ExecutorDeps) {
         if (!values.every((r) => r.length === width)) {
           return fail(call, "Every row in `values` must have the same number of cells.");
         }
+        // Formula cells must arrive as strings; a number can never be a formula.
+        for (const row of values) {
+          for (const v of row) {
+            if (typeof v === "number" && String(v).startsWith("=")) {
+              return fail(call, "A numeric value cannot start with '='; send formulas as strings.");
+            }
+          }
+        }
+        // The staged write is applied through the host's `formulas` channel, so
+        // any string beginning with "=" lands as a live, recalculating formula
+        // and every other value lands as a literal — one assignment, no clobber.
+        const formulaCells = values.reduce(
+          (n, row) => n + row.filter((v) => typeof v === "string" && v.trim().startsWith("=")).length,
+          0,
+        );
         let before: CellValue[][] = [];
         try {
           before = (await host.readRange(address, values.length)).values;
@@ -458,8 +506,12 @@ export function createExecutor(deps: ExecutorDeps) {
           address,
           rows: values.length,
           columns: width,
+          formulaCells: formulaCells > 0 ? formulaCells : undefined,
           message:
-            "Shown to the user as a diff awaiting their approval. The sheet is unchanged until they accept. Tell the user what you have proposed and why — do not claim it has been applied.",
+            "Shown to the user as a diff awaiting their approval. The sheet is unchanged until they accept. Tell the user what you have proposed and why — do not claim it has been applied." +
+            (formulaCells > 0
+              ? ` ${formulaCells} cell(s) begin with '=' and will be written as live formulas the sheet recalculates.`
+              : ""),
         });
       }
 
