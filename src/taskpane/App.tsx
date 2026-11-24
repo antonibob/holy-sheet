@@ -180,6 +180,7 @@ export function App() {
   // The model-facing transcript, kept separately from what we render.
   const convo = useRef<ChatMessage[]>([{ role: "system", content: SYSTEM_PROMPT }]);
   const abort = useRef<AbortController | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -538,8 +539,16 @@ export function App() {
         })}
       </div>
 
-      <div className="chat-input-wrap">
+      {/* Collapsed the composer reads as a single send button and gives the
+          transcript the width back. It opens on hover or focus, and stays open
+          while there is text or a request in flight — collapsing out from under
+          a half-typed message would be hostile. */}
+      <div
+        className={`chat-input-wrap${input.trim() || busy ? " open" : ""}`}
+        onClick={() => inputRef.current?.focus()}
+      >
         <textarea
+          ref={inputRef}
           className="chat-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}

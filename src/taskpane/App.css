@@ -659,7 +659,23 @@ body {
   align-items: flex-end;
   gap: 8px;
   flex: none;
-  padding: 8px 8px 8px 18px;
+  /* Collapsed, the wrap is just wide enough for the send button, which is
+     absolutely positioned against the right edge so it survives the clip.
+     Sitting flush right means it opens leftwards into empty space. */
+  margin-left: auto;
+  width: 100%;
+  max-width: 54px;
+  /* Square it off so the collapsed state is a circle rather than a stadium;
+     the two-row textarea would otherwise make it taller than it is wide. */
+  max-height: 54px;
+  transition: max-width 0.36s cubic-bezier(0.2, 0.75, 0.2, 1),
+    max-height 0.3s cubic-bezier(0.2, 0.75, 0.2, 1), padding 0.3s ease,
+    border-color 0.18s, box-shadow 0.18s;
+  cursor: text;
+  /* Collapsed the padding must not floor the width — with border-box a
+     54px-wide box cannot hold 72px of padding, so it stays open-sized.
+     The send button is absolute, so 8px all round is enough to frame it. */
+  padding: 8px;
   border-radius: var(--r-pill);
   background:
     linear-gradient(
@@ -676,9 +692,28 @@ body {
   isolation: isolate;
   transition: border-color 0.18s, box-shadow 0.18s;
 }
+.chat-input-wrap:hover,
+.chat-input-wrap:focus-within,
+.chat-input-wrap.open {
+  max-width: 100%;
+  max-height: 200px;
+  padding: 8px 54px 8px 18px;
+}
 .chat-input-wrap:focus-within {
   border-color: var(--accent-ring);
   box-shadow: var(--glass-shadow), 0 0 0 3px var(--accent-soft);
+}
+/* The text fades rather than reflows, so the placeholder does not flicker
+   through the clip as the wrap opens. */
+.chat-input {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.chat-input-wrap:hover .chat-input,
+.chat-input-wrap:focus-within .chat-input,
+.chat-input-wrap.open .chat-input {
+  opacity: 1;
+  transition-delay: 0.08s;
 }
 .chat-input {
   flex: 1;
@@ -695,6 +730,9 @@ body {
 }
 .chat-input::placeholder { color: var(--faint); }
 .send-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
   width: 38px;
   height: 38px;
   flex: none;
