@@ -41,6 +41,9 @@ Baseline: 87/87 vitest tests passing.
   recon tests stay green — do not delete them.
 
 ## Done log
+- 2026-11-24 Chat UX parity, increment 1: conversation persists across taskpane
+  reloads (localStorage), New Chat control, generic-assistant empty state,
+  labels for read_formulas/aggregate_range (branch auto/chat-ux-persistence).
 - 2026-11-23 Parity audit vs Claude-in-Excel (PR #7, issues #1–#6).
   Already at parity: undo-safe staged edits, describeColumns-guided picking,
   bounded reads with 5000-row ceiling.
