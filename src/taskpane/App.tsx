@@ -98,6 +98,13 @@ function cellText(v: unknown): string {
   return v === null || v === undefined ? "" : String(v);
 }
 
+/** First letter of the provider half of "provider/model-id", for the collapsed
+ *  model pill — "deepseek/deepseek-chat" reads as "D" at a glance. */
+function providerInitial(model: string): string {
+  const provider = model.split("/")[0]?.trim();
+  return (provider?.[0] ?? "?").toUpperCase();
+}
+
 /** Before/after grid for a staged change. */
 function WriteDiff({ entry, onAccept, onReject, onRevert }: {
   entry: Extract<Entry, { kind: "write" }>;
@@ -383,8 +390,21 @@ export function App() {
       <div className="chat-header">
         <span className="chat-title">Holy Sheet</span>
         <span className={`status-dot ${config.apiKey ? "on" : ""}`} title={config.apiKey ? "Key set" : "No API key"} />
-        <span className="chat-subtitle">{config.model}</span>
-        {spend > 0 && <span className="spend">${spend.toFixed(4)}</span>}
+        <span className="header-gap" />
+        {/* Both pills sit collapsed as circles and unroll on hover or focus,
+            so the header stays quiet while a long model id is still one
+            gesture away. The collapsed glyph carries the useful half: the
+            provider initial, and the currency mark. */}
+        <span className="chat-subtitle pill" tabIndex={0} title={config.model}>
+          <span className="pill-icon" aria-hidden="true">{providerInitial(config.model)}</span>
+          <span className="pill-text">{config.model}</span>
+        </span>
+        {spend > 0 && (
+          <span className="spend pill" tabIndex={0} title={`Spent this session: $${spend.toFixed(4)}`}>
+            <span className="pill-icon" aria-hidden="true">$</span>
+            <span className="pill-text">{spend.toFixed(4)}</span>
+          </span>
+        )}
         <button
           className="icon-btn"
           onClick={() => { setProcsOpen((o) => !o); setSettingsOpen(false); setDiagOpen(false); }}
