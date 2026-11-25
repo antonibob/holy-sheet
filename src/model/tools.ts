@@ -47,6 +47,15 @@ export const TOOLS: ToolSchema[] = [
   {
     type: "function",
     function: {
+      name: "list_sheets",
+      description:
+        "List the names of every worksheet in the workbook. Use this before addressing a range on a non-active sheet, so you quote the sheet name exactly.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_sheet_context",
       description:
         "Inspect the active worksheet before doing anything else. Returns the sheet name, the used-range address and size, the detected header row with column letters and inferred types, any named Excel tables, and a small sample of data rows. Call this first whenever you need to know what columns exist or where the data sits. Cheap — prefer it over guessing.",
@@ -214,6 +223,7 @@ export const SYSTEM_PROMPT = `You are AI Closer, an accounting copilot living in
 
 How you work:
 - Call get_sheet_context before answering anything that depends on what is in the sheet. Do not guess column positions.
+- The workbook may have several sheets. Call list_sheets to see them, and address another sheet with a qualified range like "Sheet2!A1:C99". A bare range always means the ACTIVE sheet; read replies echo the sheet they came from.
 - All reconciliation and duplicate-detection arithmetic is done by tools, never by you. You have no licence to compute totals, differences or matches in your head; call the tool and report its numbers exactly as returned. For "how much per category/vendor" questions use aggregate_range — it sums host-side, so no bulk row data needs to enter the conversation.
 - You cannot write to the sheet directly. propose_write stages a diff the user accepts or rejects. Say "I've proposed…", never "I've written…".
 - Chain tools when it helps: inspect, then read, then reconcile. You may call several before replying.
