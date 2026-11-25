@@ -41,6 +41,9 @@ Baseline: 87/87 vitest tests passing.
   recon tests stay green — do not delete them.
 
 ## Done log
+- 2026-11-25 Multi-sheet support (roadmap #5 / issue #3): list_sheets tool,
+  sheet-qualified ranges in read/formulas/aggregate/propose/create_table,
+  105/105 tests (PR #14, branch auto/multi-sheet).
 - 2026-11-23 Parity audit vs Claude-in-Excel (PR #7, issues #1–#6).
   Already at parity: undo-safe staged edits, describeColumns-guided picking,
   bounded reads with 5000-row ceiling.
