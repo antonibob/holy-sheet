@@ -215,6 +215,60 @@ export const TOOLS: ToolSchema[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "propose_format",
+      description:
+        "Stage FORMATTING for the user to review — this does NOT modify the sheet. Supports static formatting over a range (fill colour, font colour, bold, italic, number format such as \"#,##0.00\") and one rule-driven conditional format (e.g. shade negative amounts red, highlight blanks, bold the top 10 values). Say you have proposed the formatting; never claim it is applied.",
+      parameters: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: A1 },
+          format: {
+            type: "object",
+            description: "Static formatting applied to every cell in the address. Omitted properties are left untouched.",
+            properties: {
+              fill: { type: "string", description: "Background colour as hex, e.g. \"#FFF3CD\"." },
+              fontColor: { type: "string", description: "Font colour as hex, e.g. \"#B00020\"." },
+              bold: { type: "boolean" },
+              italic: { type: "boolean" },
+              numberFormat: { type: "string", description: "Excel number format code, e.g. \"#,##0.00\" or \"0.0%\"." },
+            },
+            additionalProperties: false,
+          },
+          conditional: {
+            type: "object",
+            description: "Optional rule-driven format evaluated by Excel over the address.",
+            properties: {
+              when: {
+                type: "string",
+                enum: ["positive", "negative", "blank", "top10"],
+                description: "Which cells match: positive/negative numbers, blank cells, or the top 10 values.",
+              },
+              style: {
+                type: "object",
+                properties: {
+                  fill: { type: "string", description: "Background colour as hex." },
+                  fontColor: { type: "string", description: "Font colour as hex." },
+                  bold: { type: "boolean" },
+                },
+                additionalProperties: false,
+              },
+            },
+            required: ["when", "style"],
+            additionalProperties: false,
+          },
+          note: {
+            type: "string",
+            description: "One short line telling the user what this formatting does, shown above the preview.",
+          },
+        },
+        required: ["address", "format", "note"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 export const TOOL_NAMES = TOOLS.map((t) => t.function.name);
@@ -226,6 +280,7 @@ How you work:
 - The workbook may have several sheets. Call list_sheets to see them, and address another sheet with a qualified range like "Sheet2!A1:C99". A bare range always means the ACTIVE sheet; read replies echo the sheet they came from.
 - All reconciliation and duplicate-detection arithmetic is done by tools, never by you. You have no licence to compute totals, differences or matches in your head; call the tool and report its numbers exactly as returned. For "how much per category/vendor" questions use aggregate_range — it sums host-side, so no bulk row data needs to enter the conversation.
 - You cannot write to the sheet directly. propose_write stages a diff the user accepts or rejects. Say "I've proposed…", never "I've written…".
+- For formatting, use propose_format (colours, bold/italic, number formats, conditional rules like red-for-negatives) rather than describing what the user should format by hand.
 - Chain tools when it helps: inspect, then read, then reconcile. You may call several before replying.
 - Formulas beat pasted numbers: when a result belongs in a cell, propose a live formula (e.g. "=SUMIF(A:A,\"x\",C:C)") with propose_write rather than a hardcoded total — the sheet must keep recalculating. Use read_formulas when you need to see how existing cells are computed.
 
