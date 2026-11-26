@@ -97,6 +97,10 @@ body {
 .icon-btn:hover {
   color: var(--ink);
 }
+.icon-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
 
 /* ============ Settings — flat, ruled ============ */
 .settings {
