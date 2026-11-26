@@ -14,10 +14,12 @@ import {
   type AppliedWrite,
 } from "../office/excelHost.js";
 import { runAgent, trimHistory, type AgentEvent } from "./agent.js";
+import { restoreConversation, serializeConversation } from "./history.js";
 import { Markdown } from "./markdown.js";
 import "./App.css";
 
 const STORAGE_KEY = "ai-closer-config";
+const CONVO_KEY = "ai-closer-conversation";
 const FALLBACK_MODEL = "anthropic/claude-3.5-sonnet";
 
 interface Config {
@@ -67,6 +69,8 @@ type Entry =
 const TOOL_LABELS: Record<string, string> = {
   get_sheet_context: "Inspecting the sheet",
   read_range: "Reading",
+  read_formulas: "Reading formulas",
+  aggregate_range: "Summarising",
   reconcile_columns: "Reconciling",
   find_duplicates: "Checking for duplicates",
   propose_write: "Preparing a change",
@@ -157,13 +161,62 @@ export function App() {
   const [spend, setSpend] = useState(0);
 
   // The model-facing transcript, kept separately from what we render.
-  const convo = useRef<ChatMessage[]>([{ role: "system", content: SYSTEM_PROMPT }]);
+  // Restored across pane reloads so the conversation survives reopening the
+  // workbook; the system prompt is always fresh, never replayed from storage.
+  const [restoredTurns] = useState<ChatMessage[]>(() => {
+    try {
+      return restoreConversation(localStorage.getItem(CONVO_KEY)) ?? [];
+    } catch {
+      return []; // storage unavailable (rare hosts): degrade to a fresh chat
+    }
+  });
+  const convo = useRef<ChatMessage[]>([
+    { role: "system", content: SYSTEM_PROMPT },
+    ...restoredTurns,
+  ]);
   const abort = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [entries, busy]);
+
+  // Surface the restored turns in the pane so history is visible, not just
+  // replayed to the model silently.
+  useEffect(() => {
+    if (restoredTurns.length === 0) return;
+    setEntries(
+      restoredTurns.map((m) =>
+        m.role === "user"
+          ? { kind: "user" as const, id: nextId(), text: m.content }
+          : { kind: "assistant" as const, id: nextId(), text: m.content, streaming: false },
+      ),
+    );
+    // Runs once on mount; restoredTurns is fixed by the lazy initialiser.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Persist the restorable transcript; null clears stored history. */
+  const persistConvo = useCallback(() => {
+    try {
+      const raw = serializeConversation(convo.current);
+      if (raw === null) localStorage.removeItem(CONVO_KEY);
+      else localStorage.setItem(CONVO_KEY, raw);
+    } catch {
+      /* storage full or unavailable — persistence is best-effort */
+    }
+  }, []);
+
+  const newChat = useCallback(() => {
+    if (busy) return;
+    convo.current = [{ role: "system", content: SYSTEM_PROMPT }];
+    setEntries([]);
+    try {
+      localStorage.removeItem(CONVO_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, [busy]);
 
   const push = useCallback((e: Entry) => setEntries((xs) => [...xs, e]), []);
   const patch = useCallback((id: string, fn: (e: Entry) => Entry) => {
@@ -329,11 +382,12 @@ export function App() {
       });
 
       convo.current = trimHistory(outcome.messages);
+      persistConvo();
       setSpend((s) => s + outcome.totalCost);
       abort.current = null;
       setBusy(false);
     },
-    [busy, config, push, patch],
+    [busy, config, push, patch, persistConvo],
   );
 
   const stop = () => abort.current?.abort();
@@ -359,6 +413,7 @@ export function App() {
         <span className={`status-dot ${config.apiKey ? "on" : ""}`} title={config.apiKey ? "Key set" : "No API key"} />
         <span className="chat-subtitle">{config.model}</span>
         {spend > 0 && <span className="spend">${spend.toFixed(4)}</span>}
+        <button className="icon-btn" onClick={newChat} disabled={busy} title="New chat">✚</button>
         <button className="icon-btn" onClick={() => setSettingsOpen((o) => !o)} title="Settings">⚙</button>
       </div>
 
@@ -422,12 +477,12 @@ export function App() {
       <div className="chat-scroll" ref={scrollRef}>
         {entries.length === 0 && (
           <div className="empty">
-            <p className="empty-title">Reconciliation copilot</p>
-            <p>Select your data and ask. Every number comes from the deterministic engine, and nothing reaches the sheet without your approval.</p>
+            <p className="empty-title">Holy Sheet</p>
+            <p>Your Excel assistant. Ask about the sheet, or have it change something — every write shows up as a diff you approve first.</p>
             <ul>
-              <li>Reconcile the GL column against the bank column</li>
-              <li>Any duplicate payments in this range?</li>
-              <li>Why doesn't this tie out?</li>
+              <li>What are the columns in this sheet?</li>
+              <li>Total sales per region as a live SUMIF</li>
+              <li>Which rows have negative amounts?</li>
             </ul>
           </div>
         )}
