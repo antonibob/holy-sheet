@@ -41,6 +41,9 @@ Baseline: 87/87 vitest tests passing.
   recon tests stay green — do not delete them.
 
 ## Done log
+- 2026-11-25 Multi-sheet support (roadmap #5 / issue #3): list_sheets tool,
+  sheet-qualified ranges in read/formulas/aggregate/propose/create_table,
+  105/105 tests (PR #14, branch auto/multi-sheet).
 - 2026-11-24 Chat UX parity, increment 1: conversation persists across taskpane
   reloads (localStorage), New Chat control, generic-assistant empty state,
   labels for read_formulas/aggregate_range (branch auto/chat-ux-persistence).

@@ -63,6 +63,7 @@ export interface FormulaReadResult {
 /** Everything the executor needs from the spreadsheet host. */
 export interface Host {
   getSheetContext(sampleRows: number): Promise<RawSheetContext>;
+  getSheetNames(): Promise<string[]>;
   readRange(address: string, maxRows: number): Promise<ReadResult>;
   readFormulas(address: string, maxRows: number): Promise<FormulaReadResult>;
   createTable(address: string, hasHeaders: boolean): Promise<{ address: string }>;
@@ -288,6 +289,10 @@ export function createExecutor(deps: ExecutorDeps) {
               ? "The sheet is empty."
               : "Column indices in columnDetail are offsets within usedRange, which is what the reconcile and duplicate tools expect.",
         });
+      }
+      case "list_sheets": {
+        const names = await host.getSheetNames();
+        return ok(call, { names });
       }
 
       case "read_range": {

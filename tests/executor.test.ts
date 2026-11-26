@@ -51,6 +51,9 @@ function fakeHost(
     async createTable(addr: string) {
       return { address: addr };
     },
+    async getSheetNames() {
+      return ["Aug"];
+    },
   };
 }
 

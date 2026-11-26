@@ -43,7 +43,12 @@ interface SheetLike extends Loadable {
 
 interface ContextLike {
   workbook: {
-    worksheets: { getActiveWorksheet(): SheetLike };
+    worksheets: {
+      getActiveWorksheet(): SheetLike;
+      getItem(name: string): SheetLike;
+      load(props: string): void;
+      items: SheetLike[];
+    };
     getSelectedRange(): RangeLike;
     tables: { add(range: RangeLike, hasHeaders: boolean): { name: string; getRange(): RangeLike } };
   };
@@ -72,6 +77,16 @@ function excelOrThrow(): ExcelLike {
   return e;
 }
 
+/**
+ * Split an optional sheet-qualified address ("Sheet2!A1:C10") into its sheet
+ * name and plain range. A bare range resolves to the active sheet (null).
+ */
+export function splitQualifiedAddress(address: string): { sheetName: string | null; range: string } {
+  const pos = address.indexOf("!");
+  if (pos < 0) return { sheetName: null, range: address };
+  return { sheetName: address.substring(0, pos), range: address.substring(pos + 1) };
+}
+
 /** Bounded read: clip to the used range, then cap rows. */
 function clip(
   sheet: SheetLike,
@@ -96,6 +111,40 @@ function clip(
 }
 
 const USED_PROPS = "address,rowIndex,columnIndex,rowCount,columnCount,isNullObject";
+
+/**
+ * Resolve an optional sheet-qualified address to its worksheet. A bare range
+ * ("A1:C10") targets the active sheet; "Sheet2!A1:C10" targets Sheet2.
+ * Returns the resolved sheet (name loaded) and the plain range address.
+ */
+async function resolveSheet(
+  ctx: ContextLike,
+  address: string,
+): Promise<{ sheet: SheetLike; rangeAddress: string }> {
+  const { sheetName, range } = splitQualifiedAddress(address);
+  if (sheetName === null) {
+    const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+    sheet.load("name");
+    await ctx.sync();
+    return { sheet, rangeAddress: range };
+  }
+  const worksheets = ctx.workbook.worksheets;
+  worksheets.load("items/name");
+  await ctx.sync();
+  const sheet = worksheets.getItem(sheetName);
+  sheet.load("name");
+  await ctx.sync();
+  return { sheet, rangeAddress: range };
+}
+
+/** Prefix a range address with the resolved sheet name, for unambiguous replies.
+ *  Office.js range.address already carries the sheet ("Sheet1!A1:C3"), so strip
+ *  any existing prefix before re-qualifying with the sheet we actually resolved. */
+function qualify(sheet: SheetLike, address: string): string {
+  const pos = address.indexOf("!");
+  const bare = pos >= 0 ? address.substring(pos + 1) : address;
+  return `${sheet.name}!${bare}`;
+}
 
 export const excelHost: Host = {
   async getSheetContext(sampleRows: number): Promise<RawSheetContext> {
@@ -148,8 +197,8 @@ export const excelHost: Host = {
 
   async readRange(address: string, maxRows: number): Promise<ReadResult> {
     return excelOrThrow().run(async (ctx) => {
-      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
-      const target = sheet.getRange(address);
+      const { sheet, rangeAddress } = await resolveSheet(ctx, address);
+      const target = sheet.getRange(rangeAddress);
       target.load("address,rowIndex,columnIndex,rowCount,columnCount");
       const used = sheet.getUsedRangeOrNullObject();
       used.load(USED_PROPS);
@@ -157,23 +206,22 @@ export const excelHost: Host = {
 
       const clipped = clip(sheet, target, used, maxRows);
       if (!clipped) {
-        return { address: target.address, values: [], truncated: false, totalRows: 0 };
+        return { address: qualify(sheet, target.address), values: [], truncated: false, totalRows: 0 };
       }
       clipped.range.load("address,values");
       await ctx.sync();
       return {
-        address: clipped.range.address,
+        address: qualify(sheet, clipped.range.address),
         values: clipped.range.values ?? [],
         truncated: clipped.truncated,
         totalRows: clipped.totalRows,
       };
     });
   },
-
   async readFormulas(address: string, maxRows: number): Promise<FormulaReadResult> {
     return excelOrThrow().run(async (ctx) => {
-      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
-      const target = sheet.getRange(address);
+      const { sheet, rangeAddress } = await resolveSheet(ctx, address);
+      const target = sheet.getRange(rangeAddress);
       target.load("address,rowIndex,columnIndex,rowCount,columnCount");
       const used = sheet.getUsedRangeOrNullObject();
       used.load(USED_PROPS);
@@ -181,12 +229,12 @@ export const excelHost: Host = {
 
       const clipped = clip(sheet, target, used, maxRows);
       if (!clipped) {
-        return { address: target.address, formulas: [], truncated: false, totalRows: 0 };
+        return { address: qualify(sheet, target.address), formulas: [], truncated: false, totalRows: 0 };
       }
       clipped.range.load("address,formulas");
       await ctx.sync();
       return {
-        address: clipped.range.address,
+        address: qualify(sheet, clipped.range.address),
         formulas: (clipped.range.formulas ?? []).map((row) =>
           row.map((c) => (c === null || c === undefined ? "" : String(c))),
         ),
@@ -198,8 +246,8 @@ export const excelHost: Host = {
 
   async createTable(address: string, hasHeaders: boolean): Promise<{ address: string }> {
     return excelOrThrow().run(async (ctx) => {
-      const sheet = ctx.workbook.worksheets.getActiveWorksheet();
-      const range = sheet.getRange(address);
+      const { sheet, rangeAddress } = await resolveSheet(ctx, address);
+      const range = sheet.getRange(rangeAddress);
       const table = ctx.workbook.tables.add(range, hasHeaders);
       const created = table.getRange();
       created.load("address");
@@ -207,6 +255,14 @@ export const excelHost: Host = {
       return { address: created.address };
     });
   },
+  async getSheetNames(): Promise<string[]> {
+    return excelOrThrow().run(async (ctx) => {
+      const sheets = ctx.workbook.worksheets;
+      sheets.load("items/name");
+      await ctx.sync();
+      return sheets.items.map((s) => s.name);
+    });
+  }
 };
 
 /** What the user can put back if they change their mind. */
@@ -225,10 +281,10 @@ export interface AppliedWrite {
  */
 export async function applyWrite(write: PendingWrite): Promise<AppliedWrite> {
   return excelOrThrow().run(async (ctx) => {
-    const sheet = ctx.workbook.worksheets.getActiveWorksheet();
+    const { sheet, rangeAddress } = await resolveSheet(ctx, write.address);
     const height = write.values.length;
     const width = write.values[0]?.length ?? 0;
-    const anchor = sheet.getRange(write.address);
+    const anchor = sheet.getRange(rangeAddress);
     anchor.load("rowIndex,columnIndex");
     await ctx.sync();
 
@@ -253,8 +309,8 @@ export async function applyWrite(write: PendingWrite): Promise<AppliedWrite> {
 /** Restore the formulas captured before a write. */
 export async function revertWrite(applied: AppliedWrite): Promise<void> {
   await excelOrThrow().run(async (ctx) => {
-    const sheet = ctx.workbook.worksheets.getActiveWorksheet();
-    sheet.getRange(applied.address).formulas = applied.priorFormulas;
+    const { sheet, rangeAddress } = await resolveSheet(ctx, applied.address);
+    sheet.getRange(rangeAddress).formulas = applied.priorFormulas;
     await ctx.sync();
   });
 }
