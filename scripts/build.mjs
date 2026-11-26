@@ -35,6 +35,13 @@ await build({
 mkdirSync("dist/assets", { recursive: true });
 copyFileSync("src/taskpane/taskpane.html", "dist/taskpane.html");
 copyFileSync("src/commands/commands.html", "dist/commands.html");
+// Icons are committed under src/assets, so the build only copies them.
+// scripts/gen-icons.py regenerates them (npm run icons) and is no longer part
+// of the build: it was the only reason a build needed Python, and `python` is
+// not on PATH by default on Windows, where it opens a Store shortcut instead.
+for (const size of [16, 32, 80]) {
+  copyFileSync(`src/assets/icon-${size}.png`, `dist/assets/icon-${size}.png`);
+}
 // Manifest is served from dist so the Trusted Catalog can point at
 // https://localhost:3000/manifest.xml.
 copyFileSync("manifest.xml", "dist/manifest.xml");
