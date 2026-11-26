@@ -79,10 +79,86 @@ export interface PendingWrite {
   before: CellValue[][];
 }
 
+/**
+ * Static formatting to apply to a range: fill, font and number format.
+ * Only the properties actually present are touched — absent means "leave
+ * as-is", never "reset to default".
+ */
+export interface FormatSpec {
+  /** Cell background as #RGB or #RRGGBB hex. */
+  fill?: string;
+  /** Font colour as #RGB or #RRGGBB hex. */
+  fontColor?: string;
+  bold?: boolean;
+  italic?: boolean;
+  /** Excel number format code, e.g. "#,##0.00" or "0.0%". */
+  numberFormat?: string;
+}
+
+/**
+ * A rule-driven conditional format over a range. The condition is evaluated by
+ * Excel itself, so the formatting tracks the data as it changes.
+ */
+export interface ConditionalSpec {
+  /** Which cells the rule matches. */
+  when: "positive" | "negative" | "blank" | "top10";
+  /** Style applied to matching cells. */
+  style: FormatSpec;
+}
+
+const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+
+export function isValidHexColor(v: unknown): v is string {
+  return typeof v === "string" && HEX_COLOR.test(v.trim());
+}
+
+/** Anything wrong with a proposed format; null when it is usable. */
+export function formatProblems(format: FormatSpec, conditional?: ConditionalSpec): string[] {
+  const problems: string[] = [];
+  for (const key of ["fill", "fontColor"] as const) {
+    const v = format[key];
+    if (v !== undefined && !isValidHexColor(v)) {
+      problems.push(`\`${key}\` must be a hex colour like "#RRGGBB", got "${v}".`);
+    }
+  }
+  if (format.numberFormat !== undefined && format.numberFormat.trim() === "") {
+    problems.push("`numberFormat` must be a non-empty Excel format code.");
+  }
+  if (
+    !format.fill &&
+    !format.fontColor &&
+    format.bold === undefined &&
+    format.italic === undefined &&
+    format.numberFormat === undefined
+  ) {
+    problems.push("Set at least one of fill, fontColor, bold, italic or numberFormat.");
+  }
+  if (conditional) {
+    if (!["positive", "negative", "blank", "top10"].includes(conditional.when)) {
+      problems.push(`\`conditional.when\` must be one of positive, negative, blank, top10.`);
+    }
+    if (!isValidHexColor(conditional.style.fill) && !isValidHexColor(conditional.style.fontColor)) {
+      problems.push("A conditional rule needs a `fill` or `fontColor` to be visible.");
+    }
+  }
+  return problems;
+}
+
+/** A formatting change awaiting the user's yes/no, mirroring PendingWrite. */
+export interface PendingFormat {
+  id: string;
+  address: string;
+  note: string;
+  format: FormatSpec;
+  conditional?: ConditionalSpec;
+}
+
 export interface ExecutorDeps {
   host: Host;
   /** Shows the user a diff; returns what the model is told. */
   stageWrite: (write: PendingWrite) => void;
+  /** Shows the user a formatting preview; the sheet is untouched until accepted. */
+  stageFormat?: (format: PendingFormat) => void;
 }
 
 const DEFAULT_SAMPLE_ROWS = 8;
@@ -268,7 +344,7 @@ export function aggregateRange(
 let writeSeq = 0;
 
 export function createExecutor(deps: ExecutorDeps) {
-  const { host, stageWrite } = deps;
+  const { host, stageWrite, stageFormat } = deps;
 
   return async function execute(call: ToolCall): Promise<ToolResult> {
     switch (call.name) {
@@ -526,6 +602,47 @@ export function createExecutor(deps: ExecutorDeps) {
         const hasHeaders = call.args.hasHeaders !== false;
         const res = await host.createTable(address, hasHeaders);
         return ok(call, { created: true, address: res.address, hasHeaders });
+      }
+
+      case "propose_format": {
+        const address = str(call.args, "address");
+        if (!address) return fail(call, "propose_format needs an `address`, e.g. \"B2:B99\".");
+        const note = str(call.args, "note") ?? "Proposed formatting";
+        const rawFormat = (call.args.format ?? {}) as Record<string, unknown>;
+        const format: FormatSpec = {};
+        if (rawFormat.fill !== undefined) format.fill = String(rawFormat.fill).trim();
+        if (rawFormat.fontColor !== undefined) format.fontColor = String(rawFormat.fontColor).trim();
+        if (rawFormat.bold !== undefined) format.bold = rawFormat.bold === true;
+        if (rawFormat.italic !== undefined) format.italic = rawFormat.italic === true;
+        if (typeof rawFormat.numberFormat === "string") format.numberFormat = rawFormat.numberFormat.trim();
+
+        let conditional: ConditionalSpec | undefined;
+        const rawCond = call.args.conditional as Record<string, unknown> | undefined;
+        if (rawCond && typeof rawCond === "object") {
+          const rawStyle = (rawCond.style ?? {}) as Record<string, unknown>;
+          conditional = {
+            when: rawCond.when as ConditionalSpec["when"],
+            style: {
+              fill: rawStyle.fill === undefined ? undefined : String(rawStyle.fill).trim(),
+              fontColor: rawStyle.fontColor === undefined ? undefined : String(rawStyle.fontColor).trim(),
+              bold: rawStyle.bold === undefined ? undefined : rawStyle.bold === true,
+            },
+          };
+        }
+
+        const problems = formatProblems(format, conditional);
+        if (problems.length > 0) return fail(call, problems.join(" "));
+
+        const pending: PendingFormat = { id: `f${++writeSeq}`, address, note, format, conditional };
+        stageFormat?.(pending);
+        return ok(call, {
+          staged: true,
+          address,
+          format,
+          conditional,
+          message:
+            "Shown to the user as a formatting preview awaiting their approval. The sheet is unchanged until they accept. Say you have proposed the formatting — do not claim it is applied.",
+        });
       }
 
       default:

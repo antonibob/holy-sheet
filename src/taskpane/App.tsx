@@ -5,12 +5,15 @@ import {
   type ModelOption,
 } from "../model/client.js";
 import { SYSTEM_PROMPT } from "../model/tools.js";
-import { createExecutor, type PendingWrite } from "../office/executor.js";
+import { createExecutor, type PendingFormat, type PendingWrite } from "../office/executor.js";
 import {
+  applyFormat,
   applyWrite,
   excelHost,
   isInExcel,
+  revertFormat,
   revertWrite,
+  type AppliedFormat,
   type AppliedWrite,
 } from "../office/excelHost.js";
 import { runAgent, trimHistory, type AgentEvent } from "./agent.js";
@@ -64,6 +67,14 @@ type Entry =
       status: "pending" | "applied" | "reverted" | "rejected";
       applied?: AppliedWrite;
       error?: string;
+    }
+  | {
+      kind: "format";
+      id: string;
+      format: PendingFormat;
+      status: "pending" | "applied" | "reverted" | "rejected";
+      applied?: AppliedFormat;
+      error?: string;
     };
 
 const TOOL_LABELS: Record<string, string> = {
@@ -74,6 +85,7 @@ const TOOL_LABELS: Record<string, string> = {
   reconcile_columns: "Reconciling",
   find_duplicates: "Checking for duplicates",
   propose_write: "Preparing a change",
+  propose_format: "Preparing formatting",
   create_table: "Creating a table",
 };
 
@@ -128,6 +140,58 @@ function WriteDiff({ entry, onAccept, onReject, onRevert }: {
       {write.values.length > preview.length && (
         <div className="write-more">+{write.values.length - preview.length} more row(s)</div>
       )}
+      {entry.error && <div className="write-error">{entry.error}</div>}
+      {status === "pending" && (
+        <div className="write-actions">
+          <button className="btn primary" onClick={onAccept}>Apply to sheet</button>
+          <button className="btn ghost" onClick={onReject}>Discard</button>
+        </div>
+      )}
+      {status === "applied" && (
+        <div className="write-actions">
+          <span className="write-state">Applied</span>
+          <button className="btn ghost" onClick={onRevert}>Undo</button>
+        </div>
+      )}
+      {status === "reverted" && <div className="write-state">Reverted</div>}
+      {status === "rejected" && <div className="write-state">Discarded — sheet unchanged</div>}
+    </div>
+  );
+}
+
+/** Preview card for a staged formatting proposal. */
+function FormatCard({ entry, onAccept, onReject, onRevert }: {
+  entry: Extract<Entry, { kind: "format" }>;
+  onAccept: () => void;
+  onReject: () => void;
+  onRevert: () => void;
+}) {
+  const { format: pending, status } = entry;
+  const { format, conditional } = pending;
+  const chips: string[] = [];
+  if (format.fill) chips.push("fill");
+  if (format.fontColor) chips.push("font colour");
+  if (format.bold !== undefined) chips.push(format.bold ? "bold" : "not bold");
+  if (format.italic !== undefined) chips.push(format.italic ? "italic" : "not italic");
+  if (format.numberFormat) chips.push(`number format ${format.numberFormat}`);
+  return (
+    <div className={`write-card ${status}`}>
+      <div className="write-head">
+        <span className="write-note">{pending.note}</span>
+        <span className="write-addr">{pending.address}</span>
+      </div>
+      <div className="format-preview">
+        {chips.map((c) => (
+          <span key={c} className="format-chip" style={format.fill ? { background: format.fill, color: format.fontColor } : undefined}>
+            {c}
+          </span>
+        ))}
+        {conditional && (
+          <span className="format-chip conditional" style={conditional.style.fill ? { background: conditional.style.fill, color: conditional.style.fontColor } : undefined}>
+            when {conditional.when}
+          </span>
+        )}
+      </div>
       {entry.error && <div className="write-error">{entry.error}</div>}
       {status === "pending" && (
         <div className="write-actions">
@@ -287,6 +351,39 @@ export function App() {
     [patch],
   );
 
+  const acceptFormat = useCallback(
+    async (id: string, pending: PendingFormat) => {
+      try {
+        const applied = await applyFormat(pending);
+        patch(id, (e) => (e.kind === "format" ? { ...e, status: "applied", applied } : e));
+      } catch (err) {
+        patch(id, (e) =>
+          e.kind === "format"
+            ? { ...e, error: err instanceof Error ? err.message : String(err) }
+            : e,
+        );
+      }
+    },
+    [patch],
+  );
+
+  const revertFormatEntry = useCallback(
+    async (id: string, applied?: AppliedFormat) => {
+      if (!applied) return;
+      try {
+        await revertFormat(applied);
+        patch(id, (e) => (e.kind === "format" ? { ...e, status: "reverted" } : e));
+      } catch (err) {
+        patch(id, (e) =>
+          e.kind === "format"
+            ? { ...e, error: err instanceof Error ? err.message : String(err) }
+            : e,
+        );
+      }
+    },
+    [patch],
+  );
+
   const send = useCallback(
     async (text: string) => {
       const prompt = text.trim();
@@ -370,6 +467,7 @@ export function App() {
       const execute = createExecutor({
         host: excelHost,
         stageWrite: (write) => push({ kind: "write", id: nextId(), write, status: "pending" }),
+        stageFormat: (format) => push({ kind: "format", id: nextId(), format, status: "pending" }),
       });
 
       convo.current = trimHistory([...convo.current, { role: "user", content: prompt }]);
@@ -515,6 +613,16 @@ export function App() {
                   onAccept={() => void acceptWrite(e.id, e.write)}
                   onReject={() => patch(e.id, (x) => (x.kind === "write" ? { ...x, status: "rejected" } : x))}
                   onRevert={() => void revert(e.id, e.applied)}
+                />
+              );
+            case "format":
+              return (
+                <FormatCard
+                  key={e.id}
+                  entry={e}
+                  onAccept={() => void acceptFormat(e.id, e.format)}
+                  onReject={() => patch(e.id, (x) => (x.kind === "format" ? { ...x, status: "rejected" } : x))}
+                  onRevert={() => void revertFormatEntry(e.id, e.applied)}
                 />
               );
             case "error":

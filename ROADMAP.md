@@ -41,6 +41,10 @@ Baseline: 87/87 vitest tests passing.
   recon tests stay green — do not delete them.
 
 ## Done log
+- 2026-11-26 Formatting parity (roadmap #6 / issue #4): propose_format tool
+  stages static (fill/font/bold/italic/numberFormat) and conditional
+  (positive/negative/blank/top10) formatting proposals, undo-safe
+  apply/revert in excelHost, 130/130 tests (branch auto/formatting).
 - 2026-11-25 Multi-sheet support (roadmap #5 / issue #3): list_sheets tool,
   sheet-qualified ranges in read/formulas/aggregate/propose/create_table,
   105/105 tests (PR #14, branch auto/multi-sheet).

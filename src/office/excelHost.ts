@@ -14,10 +14,31 @@
  *      blanking every cell the first one filled.
  */
 
-import type { CellValue, FormulaReadResult, Host, PendingWrite, RawSheetContext, ReadResult } from "./executor.js";
+import type {
+  CellValue,
+  ConditionalSpec,
+  FormulaReadResult,
+  Host,
+  PendingFormat,
+  PendingWrite,
+  RawSheetContext,
+  ReadResult,
+} from "./executor.js";
 
 interface Loadable {
   load(props: string): void;
+}
+
+interface RangeFormatLike {
+  autofitColumns(): void;
+  fill: { color: string };
+  font: { color: string; bold: boolean; italic: boolean };
+  numberFormat: string[][];
+}
+
+interface ConditionalFormatLike {
+  id: string;
+  delete(): void;
 }
 
 interface RangeLike extends Loadable {
@@ -30,7 +51,11 @@ interface RangeLike extends Loadable {
   formulas: Array<Array<string | number | null>>;
   isNullObject?: boolean;
   getIntersectionOrNullObject(other: RangeLike): RangeLike;
-  format: { autofitColumns(): void };
+  format: RangeFormatLike;
+  conditionalFormats: {
+    add(...args: unknown[]): ConditionalFormatLike;
+    getItem(id: string): ConditionalFormatLike;
+  };
 }
 
 interface SheetLike extends Loadable {
@@ -311,6 +336,100 @@ export async function revertWrite(applied: AppliedWrite): Promise<void> {
   await excelOrThrow().run(async (ctx) => {
     const { sheet, rangeAddress } = await resolveSheet(ctx, applied.address);
     sheet.getRange(rangeAddress).formulas = applied.priorFormulas;
+    await ctx.sync();
+  });
+}
+
+/** Everything needed to put a range's formatting back. */
+export interface AppliedFormat {
+  address: string;
+  prior: { fill: string | null; fontColor: string | null; bold: boolean | null; italic: boolean | null; numberFormat: string[][] | null };
+  /** Ids of conditional formats this apply added, so undo can delete exactly those. */
+  addedConditionalIds: string[];
+}
+
+/** Map a ConditionalSpec to Office.js conditionalFormats.add arguments. */
+function conditionalAddArgs(when: ConditionalSpec["when"]): unknown[] {
+  switch (when) {
+    case "positive":
+      return ["CellIs", null, "GreaterThan", "0"];
+    case "negative":
+      return ["CellIs", null, "LessThan", "0"];
+    case "blank":
+      return ["CellIs", null, "EqualTo", "="];
+    case "top10":
+      return ["TopBottom", null, null, null]; // rank defaults to top 10
+  }
+}
+
+/**
+ * Apply a staged formatting proposal, after the user accepted it. Only the
+ * properties present on the spec are touched; the rest keep whatever the user
+ * had. Conditional rules are added as real Excel conditional formats, so they
+ * keep tracking the data.
+ */
+export async function applyFormat(pending: PendingFormat): Promise<AppliedFormat> {
+  return excelOrThrow().run(async (ctx) => {
+    const { sheet, rangeAddress } = await resolveSheet(ctx, pending.address);
+    const range = sheet.getRange(rangeAddress);
+    range.load("address,format/fill/color,format/font/color,format/font/bold,format/font/italic,format/numberFormat");
+    await ctx.sync();
+
+    const format = range.format;
+    const prior = {
+      fill: format.fill.color ?? null,
+      fontColor: format.font.color ?? null,
+      bold: format.font.bold ?? null,
+      italic: format.font.italic ?? null,
+      numberFormat: format.numberFormat ?? null,
+    };
+
+    const { format: spec, conditional } = pending;
+    if (spec.fill !== undefined) format.fill.color = spec.fill;
+    if (spec.fontColor !== undefined) format.font.color = spec.fontColor;
+    if (spec.bold !== undefined) format.font.bold = spec.bold;
+    if (spec.italic !== undefined) format.font.italic = spec.italic;
+    if (spec.numberFormat !== undefined) {
+      range.load("rowCount,columnCount");
+      await ctx.sync();
+      const nf: string[][] = [];
+      for (let r = 0; r < range.rowCount; r++) nf.push(Array(range.columnCount).fill(spec.numberFormat));
+      format.numberFormat = nf;
+    }
+
+    const addedConditionalIds: string[] = [];
+    if (conditional) {
+      const style = conditional.style;
+      const args = conditionalAddArgs(conditional.when);
+      const added = range.conditionalFormats.add(...args) as ConditionalFormatLike & {
+        format: { fill: { color: string }; font: { color: string; bold: boolean } };
+      };
+      added.format.fill.color = style.fill ?? "";
+      added.format.font.color = style.fontColor ?? "";
+      if (style.bold !== undefined) added.format.font.bold = style.bold;
+      await ctx.sync();
+      addedConditionalIds.push(added.id);
+    }
+
+    await ctx.sync();
+    return { address: range.address, prior, addedConditionalIds };
+  });
+}
+
+/** Undo an accepted format, restoring the captured prior state. */
+export async function revertFormat(applied: AppliedFormat): Promise<void> {
+  await excelOrThrow().run(async (ctx) => {
+    const { sheet, rangeAddress } = await resolveSheet(ctx, applied.address);
+    const range = sheet.getRange(rangeAddress);
+    const { prior, addedConditionalIds } = applied;
+    for (const id of addedConditionalIds) {
+      range.conditionalFormats.getItem(id).delete();
+    }
+    if (prior.fill !== null) range.format.fill.color = prior.fill;
+    if (prior.fontColor !== null) range.format.font.color = prior.fontColor;
+    if (prior.bold !== null) range.format.font.bold = prior.bold;
+    if (prior.italic !== null) range.format.font.italic = prior.italic;
+    if (prior.numberFormat !== null) range.format.numberFormat = prior.numberFormat;
     await ctx.sync();
   });
 }
