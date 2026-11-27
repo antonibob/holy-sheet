@@ -29,7 +29,7 @@ declare global {
 
 if (window.Office?.onReady) {
   window.Office.onReady((info) => {
-    console.info("[AI Closer] Office ready:", String((info as { host?: string }).host ?? "?"));
+    console.info("[Holy Sheet] Office ready:", String((info as { host?: string }).host ?? "?"));
     mount();
   });
 } else {

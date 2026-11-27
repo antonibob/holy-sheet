@@ -1,45 +1,62 @@
-# AI Closer — on-prem reconciliation copilot for Excel
+# Holy Sheet — an AI assistant in Excel
 
-A spreadsheet copilot for accountants. It reads a credit-card statement export,
-runs a **deterministic reconciliation engine** (tie-outs, GST consistency,
-suspense, cross-foot checks), surfaces every mismatch as a **reviewable flag**,
-and optionally **drafts** journal coding using a small, cheap **BYO-key** model.
+A chat-first, general-purpose AI copilot for Excel. Ask it things about your
+workbook, and it does the work: reads ranges and formulas, aggregates, sorts,
+formats, builds tables, works across sheets — staging every change as a
+**reviewable diff** before anything touches a cell. The model is a small, cheap
+**BYO-key** (OpenRouter) model; the deterministic work happens host-side.
 
-The engine **never silently balances.** It flags, it parks ambiguity in Suspense,
-and it drafts — a human confirms before anything posts. That discipline is the
-product: it's the difference between a tool that hides errors and one that
-surfaces them.
+The add-in **never writes to the sheet directly.** Every edit is staged as a
+diff the user confirms with Apply. That discipline is the product: it's the
+difference between a tool that breaks your workbook and one you can trust.
 
-Built as an **Office JavaScript Add-in** (React + TypeScript), with the entire
-core extracted as pure, unit-tested modules that run without Office.
+Built as an **Office JavaScript Add-in** (React + TypeScript), with the core
+logic extracted as pure, unit-tested modules that run without Office.
+
+> **Legacy note:** this repo formerly shipped as a reconciliation copilot
+> ("AI Closer"). The reconciliation engine (`engine/`, `reconcile_columns`,
+> `find_duplicates`, `src/taskpane/reconcile.ts`) is **parked** — kept green
+> and working, but no longer the product focus. Holy Sheet is a general
+> assistant; the domain vertical can branch off later.
 
 ---
 
+## What it can do today
+
+- **Read & inspect** the sheet: `get_sheet_context`, `read_range`,
+  `read_formulas` (live `=` formulas), bounded to 5000 rows.
+- **Aggregate** host-side: `aggregate_range` group-by/summarize so thousands of
+  rows never enter the model's context.
+- **Write** values: `propose_write` stages a diff — Apply/Revert in the UI.
+- **Format**: `propose_format` stages static (fill, font, bold, numberFormat)
+  and conditional (positive/negative/top-10) formatting — staged and undo-safe.
+- **Tables**: `create_table` over an address, staged.
+- **Multi-sheet**: `list_sheets` and sheet-qualified ranges (`Sheet2!A1:C10`).
+- **Chat UX**: persistent conversation across taskpane reloads, streaming steps,
+  tool cards, New Chat.
+- **Formulas read**: see exactly what's already computed before proposing
+  anything.
+
 ## Why this exists
 
-Senior accountants spend their week in the same three loops: reconcile the bank,
-clean up the credit card, explain the variance. These are *deterministic* jobs
-wrapped in *judgment* calls — which vendor codes to what GL, is this refund the
-same charge, is this vendor's GST treatment actually stable.
-
-This project is the exact division of labor:
+Spreadsheet copilots that dump the whole sheet into the model are slow, wrong
+at arithmetic, and unsafe. Holy Sheet flips the division of labor:
 
 | Concern | Owner | Example |
 |---|---|---|
-| Math, sums, tie-outs, minute precision | **Engine** (deterministic, tested) | per-card sum vs statement, `gross×5/105` |
-| Cross-cutting rules | **Engine** | 4-month GST consistency gate |
-| Don't guess | **Engine** | ambiguous row → Suspense `#9999-99` |
-| Judgment / drafts | **LLM** (BYO-key) | normalize an ambiguous vendor, suggest a GL code |
-| Never fabricate | **Both** | every model draft is re-validated by the engine |
+| Math, sums, aggregations | **Host** (deterministic, tested) | `aggregate_range` sums server-side |
+| Reading the sheet | **Host** | bounded reads, formula extraction |
+| Writing / formatting | **User**, via staged diffs | nothing reaches a cell without Apply |
+| Judgment, picking tools | **LLM** (BYO-key) | "which column is the vendor?" |
 
-The LLM is a **narrow draft layer**, never an authority. You bring your own
-OpenRouter key and pick a cheap model — and because it's BYO-key, confidential
-ledger data never rides a shared subscription.
+The model reports numbers returned by tools; it never computes totals in its
+head. And because the key is yours, confidential workbook data never rides a
+shared subscription.
 
 ## Current status
 
-- ✅ **Engine** — full implementation, **12/12 unit tests green**, `tsc` clean
-- ✅ **Model layer** — OpenRouter `chat/completions` with JSON-mode GL-code drafts
+- ✅ **Core** — pure TS modules, **113/113 unit tests green**, `tsc` clean
+- ✅ **Model layer** — OpenRouter `chat/completions` with tool calling + streaming
 - ✅ **Taskpane** — React UI, runs live in a plain browser on a demo dataset
 - ✅ **Bundle** — esbuild produces `dist/` (js + css) for sideload
 - 🔶 **Office sideload packaging** — manifest present; serve over https + icons TODO
@@ -47,13 +64,13 @@ ledger data never rides a shared subscription.
 ### Verified
 
 ```sh
-npm test        # 12 passing — engine against the Talius CC recon spec rules
-npm run typecheck  # 0 errors (strict)
-npm run build   # bundles dist/taskpane.{js,css}
+npx vitest run    # 113 passing — core, executor, model, taskpane modules
+npm run typecheck # 0 errors (strict)
+npm run build     # bundles dist/taskpane.{js,css}
 ```
 
 The `src/office` adapters and manifest are scaffolded but not exercised in CI
-(no Office host on the runner). The engine they feed is fully tested.
+(no Office host on the runner). The core modules they feed are fully tested.
 
 ## Quick start — run the live demo (no Office needed)
 
@@ -64,31 +81,15 @@ npx serve dist        # or: python -m http.server 8137 --directory dist
 # open http://localhost:8137/taskpane.html
 ```
 
-The taskpane renders on a realistic Talius-style card month:
-`0807 Cal`, `3474 Frank`, `9494 Greg`, `9583 Greg`, `7878 Frank`, `2169 Rares`.
-Watch the engine produce per-card tie-outs, a zero variance, a GST consistency
-note (Shaw, Adobe qualify; Anthropic/US and one-offs don't), a refund routed to
-Other credits, a skipped $0 placeholder, and one `DUBLIN` charge parked in
-Suspense — which you can then tell the model to draft.
-
 ## Architecture
 
 ```
 manifest.xml              Office Add-in manifest (sideload)
 src/
-  engine/                 pure TS, no deps, fully unit-tested
-    types.ts              cents-exact domain model
-    mapping.ts            last-4 → cardholder
-    gst.ts                4-month GST consistency gate
-    coding.ts             cross-foot (Check) math
-    recon_math.ts         O(n+m) amount matching with row provenance
-    parsing.ts            filthy-export amount parsing → integer cents
-    reconciler.ts         orchestrator: tie-outs, credit detect, suspense, variance
-    index.ts
   model/
     client.ts             BYO-key OpenRouter client: tool calling + streaming
     tools.ts              tool schemas + system prompt handed to the model
-    openrouter.ts         JSON GL-code drafts
+    openrouter.ts         JSON drafts
   office/
     executor.ts           runs a tool call; host-agnostic, unit-tested
     excelHost.ts          the only code that touches Excel (structural types)
@@ -96,11 +97,12 @@ src/
     agent.ts              the tool-calling loop
     App.tsx               React UI — streaming, tool cards, diff approval
     markdown.tsx          renders replies as React elements (no innerHTML)
-    reconcile.ts          two-column reconcile with true worksheet rows
-    demo.ts               realistic card month used by the demo
+    reconcile.ts          (parked legacy) two-column reconcile
+    demo.ts               demo dataset
     index.{tsx,css} App.css
+  engine/                 (parked legacy) deterministic recon engine, fully tested
   commands/               manifest FunctionFile stub
-tests/                    87 tests
+tests/                    113 tests
 scripts/
   build.mjs               esbuild bundle of taskpane + commands entries
 ```
@@ -113,17 +115,11 @@ the results back, and repeats until the model answers.
 
 Two invariants hold regardless of what the model says:
 
-- **It cannot do the arithmetic.** Reconciliation and duplicate detection run in
-  `engine/`, exposed as tools. The model reports returned numbers; it never
+- **It cannot do the arithmetic.** Aggregation and any deterministic math run
+  host-side, exposed as tools. The model reports returned numbers; it never
   computes them.
-- **It cannot write to the sheet.** `propose_write` stages a diff. Nothing
-  reaches a cell until the user clicks Apply.
-
-The engine's rules encode Talius's real company conventions — most notably the
-**GST rule**: claim GST *only* for vendors whose treatment has been consistent
-for **≥ 4 consecutive months**; everything else (one-off restaurants, transport,
-flights, hotels, first-time and foreign/US vendors) gets none, regardless of
-conventional taxability.
+- **It cannot write to the sheet.** `propose_write` / `propose_format` stage a
+  diff. Nothing reaches a cell until the user clicks Apply.
 
 ## Install & run in Excel
 
@@ -149,7 +145,7 @@ Then in Excel:
 1. **File → Options → Trust Center → Trust Center Settings → Trusted Add-in Catalogs**
 2. Under "Categories/Trusted catalogs", check **Catalog URL** that points to the
    `manifests` folder, and enable **"Show in Menu"**
-3. Restart Excel → **Home → Add-ins → My Add-ins** → the **AI Closer** taskpane
+3. Restart Excel → **Home → Add-ins → My Add-ins** → the **Holy Sheet** taskpane
    is listed → click it.
 
 The add-in fetches `https://localhost:3000/taskpane.html` (trusted cert) and
@@ -173,9 +169,9 @@ npm run serve                        # reuses ~/.office-addin-dev-certs/
 
 ## Models & cost
 
-BYO key, pick a cheap model. Default is `deepseek/deepseek-v3-0724`; the
-prompt-token cost for a full card month is pennies. The draft layer is scoped
-to the handful of suspense/ambiguous rows, not the whole ledger.
+BYO key, pick a cheap model. Default is `deepseek/deepseek-v3-0724`; a normal
+session costs pennies because bulk row data is aggregated host-side, never
+shipped through the model's context.
 
 ## Prior art
 
@@ -185,7 +181,7 @@ Two earlier sketches of the OpenRouter-in-Excel plumbing live in `references/`
 - `references/OpenRouterOfficeScript.ts` — Office Script, built-in `fetch`, free Nemotron
 
 This repo is the productized version: those proved the pipe; this adds the
-engine, the rules, and the shell.
+staged-edit core, the tools, and the shell.
 
 ## License
 

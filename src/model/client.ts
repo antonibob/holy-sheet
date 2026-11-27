@@ -76,8 +76,8 @@ function headers(cfg: ClientConfig): Record<string, string> {
     "Content-Type": "application/json",
     Authorization: `Bearer ${cfg.apiKey}`,
     // OpenRouter uses these for its app leaderboard; they are not auth.
-    "HTTP-Referer": "https://github.com/antonibob/aireconciler",
-    "X-Title": "AI Closer",
+    "HTTP-Referer": "https://github.com/antonibob/holy-sheet",
+    "X-Title": "Holy Sheet",
   };
 }
 

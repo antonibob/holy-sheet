@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  AI Closer — shared-folder manifest catalog
+rem  Holy Sheet — shared-folder manifest catalog
 rem  Makes the add-in appear under Home > Add-ins > My Add-ins
 rem  without hunting for a hidden Upload button in the Apps store.
 rem ============================================================

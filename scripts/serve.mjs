@@ -51,7 +51,7 @@ const server = https
   : createHttp(handler);
 
 server.listen(PORT, () => {
-  console.log(`AI Closer serving ${DIST} on ${https ? "https" : "http"}://localhost:${PORT}/`);
+  console.log(`Holy Sheet serving ${DIST} on ${https ? "https" : "http"}://localhost:${PORT}/`);
   if (!https)
     console.warn(
       "No localhost cert found (https://localhost:3000 required for Excel sideload).\n" +
