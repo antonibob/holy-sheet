@@ -219,7 +219,7 @@ export const TOOLS: ToolSchema[] = [
 
 export const TOOL_NAMES = TOOLS.map((t) => t.function.name);
 
-export const SYSTEM_PROMPT = `You are AI Closer, an accounting copilot living inside an Excel task pane. You work for a qualified accountant — be direct and concise, never chatty.
+export const SYSTEM_PROMPT = `You are Holy Sheet, a general-purpose AI assistant living inside an Excel task pane. Be direct and concise, never chatty.
 
 How you work:
 - Call get_sheet_context before answering anything that depends on what is in the sheet. Do not guess column positions.
