@@ -41,6 +41,12 @@ Baseline: 87/87 vitest tests passing.
   recon tests stay green — do not delete them.
 
 ## Done log
+- 2026-11-28 Sort/filter parity (roadmap #7 / issue #6): staged sort_range tool
+  (header fixed, rows intact, numeric/text compare, blanks last, approval-flow
+  diff), 118/118 tests (branch auto/sort-range).
+- 2026-11-28 Roadmap status correction: formula parity shipped via PR #9,
+  aggregation via PR #10, branding PR #16 and formatting PR #15 are open
+  awaiting review/merge — done log had fallen behind.
 - 2026-11-25 Multi-sheet support (roadmap #5 / issue #3): list_sheets tool,
   sheet-qualified ranges in read/formulas/aggregate/propose/create_table,
   105/105 tests (PR #14, branch auto/multi-sheet).

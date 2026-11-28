@@ -348,3 +348,75 @@ describe("formula parity", () => {
     expect(c.formulaCells).toBeUndefined();
   });
 });
+
+describe("sort_range", () => {
+  const stageNoop = () => {};
+  const sheet = [
+    ["Vendor", "Amount", "Note"],
+    ["AirCo", 30, "x"],
+    ["Cafe", 10, "y"],
+    ["Deli", 20, "z"],
+  ];
+
+  it("sorts ascending by a column offset, keeping the header and rows intact", async () => {
+    const staged: PendingWrite[] = [];
+    const exec = createExecutor({ host: fakeHost(sheet, "A1:C4"), stageWrite: (w) => staged.push(w) });
+    const res = await exec(call("sort_range", { address: "A1:C4", column: 1 }));
+    expect(res.isError).toBeUndefined();
+    const c = res.content as { staged: boolean; rows: number; message: string };
+    expect(c.staged).toBe(true);
+    expect(c.rows).toBe(3);
+    expect(c.message).toMatch(/awaiting their approval/);
+    // Header untouched, rows whole, ordered 10/20/30.
+    expect(staged[0]?.values[0]).toEqual(["Vendor", "Amount", "Note"]);
+    expect(staged[0]?.values.slice(1).map((r) => r[1])).toEqual([10, 20, 30]);
+    expect(staged[0]?.values[1]).toEqual(["Cafe", 10, "y"]);
+    // The sheet is not mutated until approval: before keeps the original order.
+    expect(staged[0]?.before[1]).toEqual(["AirCo", 30, "x"]);
+  });
+
+  it("sorts descending with blanks sinking to the bottom either way", async () => {
+    const blanked = [
+      ["Name", "Score"],
+      ["Ann", 5],
+      ["Bo", null],
+      ["Cy", 9],
+    ];
+    const staged: PendingWrite[] = [];
+    const exec = createExecutor({ host: fakeHost(blanked, "A1:B4"), stageWrite: (w) => staged.push(w) });
+    await exec(call("sort_range", { address: "A1:B4", column: 1, direction: "desc" }));
+    const col = staged[0]?.values.slice(1).map((r) => r[1]);
+    expect(col).toEqual([9, 5, null]); // blank last even descending
+  });
+
+  it("compares numeric-looking strings as numbers, not text", async () => {
+    const textual = [
+      ["ID", "Amt"],
+      ["a", "100"],
+      ["b", "20"],
+      ["c", "3"],
+    ];
+    const staged: PendingWrite[] = [];
+    const exec = createExecutor({ host: fakeHost(textual, "A1:B4"), stageWrite: (w) => staged.push(w) });
+    await exec(call("sort_range", { address: "A1:B4", column: 1 }));
+    expect(staged[0]?.values.slice(1).map((r) => r[1])).toEqual(["3", "20", "100"]);
+  });
+
+  it("validates the column offset and direction", async () => {
+    const exec = createExecutor({ host: fakeHost(sheet, "A1:C4"), stageWrite: stageNoop });
+    const badCol = await exec(call("sort_range", { address: "A1:C4", column: 7 }));
+    expect(badCol.isError).toBe(true);
+    expect(String((badCol.content as { error: string }).error)).toMatch(/outside/);
+    const negCol = await exec(call("sort_range", { address: "A1:C4", column: -1 }));
+    expect(negCol.isError).toBe(true);
+    const badDir = await exec(call("sort_range", { address: "A1:C4", column: 0, direction: "up" }));
+    expect(badDir.isError).toBe(true);
+  });
+
+  it("needs an address and refuses a header-only range", async () => {
+    const exec = createExecutor({ host: fakeHost(sheet, "A1:C4"), stageWrite: stageNoop });
+    expect((await exec(call("sort_range", { column: 0 }))).isError).toBe(true);
+    const single = createExecutor({ host: fakeHost([["H"]], "A1:C1"), stageWrite: stageNoop });
+    expect((await single(call("sort_range", { address: "A1:C1", column: 0 }))).isError).toBe(true);
+  });
+});
