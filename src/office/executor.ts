@@ -162,6 +162,43 @@ export function describeColumns(sample: CellValue[][], baseAddress: string | nul
   });
 }
 
+/**
+ * Sort a range's rows by one column, keeping the first row (header) fixed and
+ * every row intact. Pure: returns new arrays, never mutates the input.
+ * Numeric-looking cells compare as numbers, everything else as text; blank
+ * cells sink to the bottom regardless of direction.
+ */
+export function sortRangeValues(
+  values: CellValue[][],
+  column: number,
+  direction: "asc" | "desc",
+): CellValue[][] {
+  const header = values[0] ?? [];
+  const body = values.slice(1).map((row) => [...row]);
+  const isEmpty = (v: CellValue) => v === null || v === undefined || String(v).trim() === "";
+  const numeric = (v: CellValue): number | null => {
+    if (typeof v === "number") return v;
+    const s = String(v).trim();
+    if (s === "" || Number.isNaN(Number(s))) return null;
+    return Number(s);
+  };
+  const dir = direction === "desc" ? -1 : 1;
+  body.sort((ra, rb) => {
+    const a = ra[column] ?? null;
+    const b = rb[column] ?? null;
+    const ae = isEmpty(a);
+    const be = isEmpty(b);
+    if (ae && be) return 0;
+    if (ae) return 1; // blanks last, whichever way we sort
+    if (be) return -1;
+    const an = numeric(a);
+    const bn = numeric(b);
+    if (an !== null && bn !== null) return (an - bn) * dir;
+    return String(a).localeCompare(String(b)) * dir;
+  });
+  return [header, ...body];
+}
+
 function ok(call: ToolCall, content: unknown): ToolResult {
   return { toolCallId: call.id, name: call.name, content };
 }
@@ -517,6 +554,50 @@ export function createExecutor(deps: ExecutorDeps) {
             (formulaCells > 0
               ? ` ${formulaCells} cell(s) begin with '=' and will be written as live formulas the sheet recalculates.`
               : ""),
+        });
+      }
+
+      case "sort_range": {
+        const address = str(call.args, "address");
+        const column = int(call.args, "column");
+        const dirRaw = str(call.args, "direction") ?? "asc";
+        if (!address) return fail(call, "sort_range needs an `address`, e.g. \"A1:D200\".");
+        if (column === null || column < 0) {
+          return fail(call, "sort_range needs integer `column` — the zero-based offset within the address.");
+        }
+        if (dirRaw !== "asc" && dirRaw !== "desc") {
+          return fail(call, "`direction` must be \"asc\" or \"desc\".");
+        }
+        const res = await host.readRange(address, ABSOLUTE_MAX_ROWS);
+        if (res.truncated) {
+          return fail(call, `Range has ${res.totalRows} rows, past the ${ABSOLUTE_MAX_ROWS}-row ceiling. Narrow the address.`);
+        }
+        const width = Math.max(0, ...res.values.map((r) => r.length));
+        if (column >= width) {
+          return fail(call, `Column offset ${column} is outside ${address} (${width} columns). Use describeColumns-style offsets from the range's left edge.`);
+        }
+        if (res.values.length <= 1) {
+          return fail(call, "Nothing to sort: the range has no data rows below its header.");
+        }
+        const sorted = sortRangeValues(res.values, column, dirRaw);
+        const note = str(call.args, "note") ?? `Sort ${address} by column ${column + 1} (${dirRaw})`;
+        const write: PendingWrite = {
+          id: `w${++writeSeq}`,
+          address,
+          note,
+          values: sorted,
+          before: res.values,
+        };
+        stageWrite(write);
+        return ok(call, {
+          staged: true,
+          address,
+          rows: sorted.length - 1,
+          columns: width,
+          sortBy: column,
+          direction: dirRaw,
+          message:
+            "Shown to the user as a before/after diff awaiting their approval. The sheet is unchanged until they accept. Tell the user what you have proposed and why — do not claim it has been applied.",
         });
       }
 

@@ -202,6 +202,35 @@ export const TOOLS: ToolSchema[] = [
   {
     type: "function",
     function: {
+      name: "sort_range",
+      description:
+        "Stage a sort of a range's rows by one column, for the user to approve. This does NOT modify the sheet — it shows a before/after diff the user accepts or rejects. The first row of the address is treated as a header and stays put; every data row stays intact. Rows are compared numerically when both cells are numeric, otherwise as text; blanks sink to the bottom.",
+      parameters: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: A1 },
+          column: {
+            type: "integer",
+            description: "Zero-based column offset within the address to sort by (0 = the range's first column).",
+          },
+          direction: {
+            type: "string",
+            enum: ["asc", "desc"],
+            description: "Sort direction. Defaults to asc.",
+          },
+          note: {
+            type: "string",
+            description: "One short line telling the user what this sort does, shown above the diff.",
+          },
+        },
+        required: ["address", "column"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_table",
       description: "Convert a range into a native Excel Table. Ask the user first unless they clearly requested it.",
       parameters: {
@@ -225,6 +254,7 @@ How you work:
 - Call get_sheet_context before answering anything that depends on what is in the sheet. Do not guess column positions.
 - The workbook may have several sheets. Call list_sheets to see them, and address another sheet with a qualified range like "Sheet2!A1:C99". A bare range always means the ACTIVE sheet; read replies echo the sheet they came from.
 - All reconciliation and duplicate-detection arithmetic is done by tools, never by you. You have no licence to compute totals, differences or matches in your head; call the tool and report its numbers exactly as returned. For "how much per category/vendor" questions use aggregate_range — it sums host-side, so no bulk row data needs to enter the conversation.
+- To reorder rows (sort by a column), propose sort_range — it stages a before/after diff the user approves; never claim a sort is applied.
 - You cannot write to the sheet directly. propose_write stages a diff the user accepts or rejects. Say "I've proposed…", never "I've written…".
 - Chain tools when it helps: inspect, then read, then reconcile. You may call several before replying.
 - Formulas beat pasted numbers: when a result belongs in a cell, propose a live formula (e.g. "=SUMIF(A:A,\"x\",C:C)") with propose_write rather than a hardcoded total — the sheet must keep recalculating. Use read_formulas when you need to see how existing cells are computed.
